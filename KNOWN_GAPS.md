@@ -1,6 +1,6 @@
 # Known Gaps
 
-This list reflects the implementation after Phase 2b. **UNVERIFIED** means no real PostgreSQL run has confirmed the behavior.
+This list reflects the implementation after Phase 3a. **UNVERIFIED** means no real PostgreSQL run has confirmed the behavior.
 
 ## Database verification
 
@@ -8,11 +8,13 @@ This list reflects the implementation after Phase 2b. **UNVERIFIED** means no re
 - **VERIFIED locally — SQLAlchemy models vs schema:** live catalog introspection found all 49 mapped tables and their mapped columns.
 - **VERIFIED locally — seed script:** the reference seed ran twice without duplicate rows.
 - **VERIFIED locally — auth smoke test:** login, profile, refresh rotation, logout, and refresh-token revocation worked against PostgreSQL.
-- **VERIFIED locally — Phase 2b API integration:** settings validation/readiness/audit redaction, customer validation/duplicate GSTIN/filtering/soft-delete history, draft CRUD, invoice preview parity (intra-state, inter-state, bill of supply, discount, cess, and round-off), active-rate and serial validation, authorization, and invoice guard triggers passed against the isolated PostgreSQL test database.
-- **UNVERIFIED — PostgreSQL concurrency:** current numbering concurrency tests use SQLite; no PostgreSQL concurrency tests have run.
+- **VERIFIED locally — Phase 2b/3a PostgreSQL API integration:** settings, customers, invoice drafts/previews, approval, issue/cancel, proforma conversion and restrictions, PDF generation, permissions, invoice triggers, stock/serial restoration, accounting postings/reversals, rollback, and audit behavior are covered by the isolated PostgreSQL test suite.
+- **VERIFIED locally — Phase 3a acceptance audit:** named PostgreSQL tests cover 20-way numbering concurrency, five simultaneous issue requests for one draft, last-unit competition, injected transaction rollback (including serial status, invoice status/number, stock, sequence, and journals), accounting totals across intra/inter-state invoices, cancellation reversal/restock, trigger rejection, lifecycle 401/403 responses, and PDF content/empty-bank behavior. The test names and scenario mapping are recorded in `CHANGES.md`.
+- **VERIFIED locally — PostgreSQL concurrency:** the test suite issues 20 drafts concurrently with unique contiguous numbers, issues one draft from five concurrent requests with exactly one success, and checks contention for the last stock unit.
+- **VERIFIED locally — integrity command:** `python -m app.cli verify-integrity` passed all checks on the isolated PostgreSQL test database after cleanup of legacy malformed test fixtures.
 - **UNVERIFIED — production operations:** load/failover behavior, backups/restores, and deployment configuration have not been exercised.
 
-Do not treat database operations as working until verified on a real PostgreSQL instance.
+These results apply only to the local isolated PostgreSQL test database; they do not establish production readiness.
 
 ## Application foundation
 
@@ -24,9 +26,14 @@ Do not treat database operations as working until verified on a real PostgreSQL 
 ## Remaining product scope
 
 - The frontend now has editable company settings and customer workflows, a draft invoice editor using server preview totals, and a lazy-loaded dashboard chart area. Browser-based manual acceptance has not been performed.
-- Issued invoice workflows, invoice numbering, PDF/print output, quotations, purchases, payments, expenses, notifications, and complete financial reports remain unimplemented. Invoice drafts do not reserve serials or update stock.
+- The Phase 3a invoice workflow supports approval, issue, cancel, numbering, stock/accounting posting, reversals, proforma conversion, and PDF downloads. It does not implement quotations/orders, purchases, payments, credit notes, expenses, notifications, or complete financial reports. Drafts validate serialized products but do not reserve serials or update stock.
+- **Costing limitation:** issue-time COGS uses the product's current `purchase_price` snapshot. Proper costing (weighted average or FIFO from purchase records) depends on the future purchase module.
+- **Tax-professional confirmation required:** the current conservative date rule rejects invoices outside the current financial year and prevents earlier dates within a series unless the user has `sales:backdate`. Confirm this rule before live use.
+- **Tax-professional confirmation required:** printed tax-invoice and bill-of-supply numbers append `T` and `B`, respectively, to the configured prefix so their display numbers remain distinct while using separate numbering series.
+- **Not handled:** e-invoice (IRN) cancellation windows and GST return implications.
+- **Not performed:** manual browser acceptance of invoice issue, stock movement, PDF download, cancellation, and the integrity command.
 - Suppliers and dealer workflows remain incomplete. Product/inventory functionality has automated API coverage but is not a full end-to-end sales-to-stock workflow.
 - Password reset/change workflows, account administration endpoints, granular audit coverage, and broader API authorization/data-isolation testing remain to be implemented.
-- PostgreSQL numbering/concurrency tests, operational backup/restore, production load/failover, deployment, and first-admin operational procedures remain unverified.
+- Operational backup/restore, production load/failover, deployment, and first-admin operational procedures remain unverified.
 - GST assumptions are documented in `backend/README.md`; this is not a legal-compliance claim and requires review by a qualified Indian tax professional.
 - BEREV's official GSTIN, PAN, bank information, and other registrations must be supplied through configuration rather than invented.

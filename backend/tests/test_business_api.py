@@ -2,19 +2,34 @@ import asyncio
 import os
 import unittest
 import uuid
+from datetime import date
+from io import BytesIO
 from decimal import Decimal
+from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.auth.security import create_token_pair, hash_password
 from app.config import PROJECT_ROOT, Settings
 from app.main import create_app
-from app.models import AuditLog, Customer, Permission, ProductSerial, Role, User
+from app.models import (
+    AuditLog,
+    Customer,
+    Invoice,
+    Inventory,
+    JournalEntry,
+    Permission,
+    ProductSerial,
+    Role,
+    StockMovement,
+    User,
+)
 from app.seed import seed_reference_data
 from berev_core.gst import LineInput, compute_invoice, gstin_checksum_char
 from berev_core.words import amount_in_words
+from pypdf import PdfReader
 
 
 @unittest.skipUnless(
@@ -55,6 +70,186 @@ class BusinessApiTests(unittest.TestCase):
                 update(User).where(User.id == cls.user_id).values(is_active=False)
             )
         cls.app.state.engine.dispose()
+
+    def test_phase3a_accounting_balances_across_issued_invoices(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        pan = f"AB{chr(65 + int(suffix[0], 16))}DE{int(suffix[:4], 16) % 10000:04d}F"
+        first_fourteen = f"06{pan}1Z"
+        gstin = first_fourteen + gstin_checksum_char(first_fourteen)
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                settings_response = await client.put(
+                    "/api/v1/settings",
+                    json={
+                        "legal_name": "Accounting Integration Company",
+                        "address": "Integration test address",
+                        "gstin": gstin,
+                        "pan": pan,
+                        "state_code": "06",
+                        "invoice_prefix": f"A{suffix[:2]}",
+                        "fy_start_month": 4,
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(settings_response.status_code, 200, settings_response.text)
+
+                customer_response = await client.post(
+                    "/api/v1/customers",
+                    json={
+                        "code": f"ACCT-{suffix}",
+                        "name": "Accounting integration customer",
+                        "customer_type": "business",
+                        "state_code": "29",
+                        "billing_address": "Test billing address",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(customer_response.status_code, 201, customer_response.text)
+                customer_id = customer_response.json()["id"]
+
+                category = await client.post(
+                    "/api/v1/product-categories",
+                    json={"name": f"Accounting category {suffix}"},
+                    headers=headers,
+                )
+                self.assertEqual(category.status_code, 201, category.text)
+                product_options = await client.get("/api/v1/product-options", headers=headers)
+                self.assertEqual(product_options.status_code, 200, product_options.text)
+                rate = next(
+                    (item["rate"] for item in product_options.json()["gst_rates"] if item["rate"] == "18.00"),
+                    None,
+                )
+                if rate is None:
+                    created_rate = await client.post(
+                        "/api/v1/gst-rates",
+                        json={"rate": "18.00", "description": "Accounting integration rate"},
+                        headers=headers,
+                    )
+                    self.assertEqual(created_rate.status_code, 201, created_rate.text)
+                    rate = created_rate.json()["rate"]
+                warehouse = await client.post(
+                    "/api/v1/warehouses",
+                    json={"code": f"AC-{suffix}", "name": f"Accounting warehouse {suffix}"},
+                    headers=headers,
+                )
+                self.assertEqual(warehouse.status_code, 201, warehouse.text)
+                hsn = await client.post(
+                    "/api/v1/hsn-sac-codes",
+                    json={
+                        "code": f"{int(suffix, 16) % 100000000:08d}",
+                        "description": "Accounting integration item",
+                        "kind": "HSN",
+                        "default_gst_rate": rate,
+                        "default_cess_rate": "0",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(hsn.status_code, 201, hsn.text)
+                product = await client.post(
+                    "/api/v1/products",
+                    json={
+                        "sku": f"AC-{suffix}",
+                        "name": "Accounting integration item",
+                        "category_id": category.json()["id"],
+                        "hsn_sac": hsn.json()["code"],
+                        "unit": "PCS",
+                        "purchase_price": "40.00",
+                        "selling_price": "100.00",
+                        "gst_rate": rate,
+                        "cess_rate": "0",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(product.status_code, 201, product.text)
+                stock = await client.post(
+                    "/api/v1/inventory/adjustments",
+                    json={
+                        "product_id": product.json()["id"],
+                        "warehouse_id": warehouse.json()["id"],
+                        "quantity_delta": "2",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(stock.status_code, 201, stock.text)
+
+                invoice_ids = []
+                for place_of_supply in ("06", "29"):
+                    draft = await client.post(
+                        "/api/v1/invoices",
+                        json={
+                            "customer_id": customer_id,
+                            "place_of_supply_code": place_of_supply,
+                            "invoice_date": date.today().isoformat(),
+                            "lines": [{
+                                "product_id": product.json()["id"],
+                                "warehouse_id": warehouse.json()["id"],
+                                "description": "Accounting integration item",
+                                "hsn_sac": hsn.json()["code"],
+                                "unit": "PCS",
+                                "quantity": "1",
+                                "unit_price": "100.00",
+                                "discount_pct": "0",
+                                "discount_amount": "0",
+                                "gst_rate": rate,
+                                "cess_rate": "0",
+                            }],
+                        },
+                        headers=headers,
+                    )
+                    self.assertEqual(draft.status_code, 201, draft.text)
+                    invoice_id = draft.json()["id"]
+                    approved = await client.post(f"/api/v1/invoices/{invoice_id}/approve", headers=headers)
+                    self.assertEqual(approved.status_code, 200, approved.text)
+                    issued = await client.post(f"/api/v1/invoices/{invoice_id}/issue", headers=headers)
+                    self.assertEqual(issued.status_code, 200, issued.text)
+                    invoice_ids.append(invoice_id)
+
+                with self.factory() as session:
+                    balances = {
+                        account: (Decimal(debit), Decimal(credit))
+                        for account, debit, credit in session.execute(
+                            text(
+                                "SELECT line.account_code, sum(line.debit), sum(line.credit) "
+                                "FROM journal_entry_lines line "
+                                "JOIN journal_entries entry ON entry.id = line.entry_id "
+                                "WHERE entry.source_type = 'invoice' "
+                                "AND entry.source_id = ANY(:invoice_ids) "
+                                "AND entry.reverses_entry_id IS NULL "
+                                "GROUP BY line.account_code"
+                            ),
+                            {"invoice_ids": invoice_ids},
+                        ).all()
+                    }
+                    self.assertEqual(balances["1100"], (Decimal("236.00"), Decimal("0")))
+                    self.assertEqual(balances["4000"], (Decimal("0"), Decimal("200.00")))
+                    self.assertEqual(balances["2100"], (Decimal("0"), Decimal("9.00")))
+                    self.assertEqual(balances["2101"], (Decimal("0"), Decimal("9.00")))
+                    self.assertEqual(balances["2102"], (Decimal("0"), Decimal("18.00")))
+                    self.assertEqual(balances["5000"], (Decimal("80.00"), Decimal("0")))
+                    self.assertEqual(balances["1200"], (Decimal("0"), Decimal("80.00")))
+                    self.assertEqual(
+                        sum((debit for debit, _credit in balances.values()), Decimal("0")),
+                        sum((credit for _debit, credit in balances.values()), Decimal("0")),
+                    )
+                    self.assertEqual(
+                        session.get(Inventory, (product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("0"),
+                    )
+
+                for invoice_id in invoice_ids:
+                    cancelled = await client.post(
+                        f"/api/v1/invoices/{invoice_id}/cancel",
+                        json={"reason": "Accounting integration test cleanup"},
+                        headers=headers,
+                    )
+                    self.assertEqual(cancelled.status_code, 200, cancelled.text)
+
+        asyncio.run(exercise_api())
 
     def test_dashboard_and_customer_crud(self):
         customer_code = f"TEST-{uuid.uuid4().hex[:16]}"
@@ -420,7 +615,12 @@ class BusinessApiTests(unittest.TestCase):
                 self.assertEqual(invalid_phone.status_code, 422)
                 filtered_customers = await client.get(
                     "/api/v1/customers",
-                    params={"customer_type": "business", "state_code": "29", "is_active": True},
+                    params={
+                        "customer_type": "business",
+                        "state_code": "29",
+                        "is_active": True,
+                        "page_size": 100,
+                    },
                     headers=headers,
                 )
                 self.assertEqual(filtered_customers.status_code, 200)
@@ -458,6 +658,12 @@ class BusinessApiTests(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(hsn.status_code, 201, hsn.text)
+                warehouse = await client.post(
+                    "/api/v1/warehouses",
+                    json={"code": f"INV-{suffix}", "name": f"Invoice warehouse {suffix}"},
+                    headers=headers,
+                )
+                self.assertEqual(warehouse.status_code, 201, warehouse.text)
                 product = await client.post(
                     "/api/v1/products",
                     json={
@@ -474,6 +680,16 @@ class BusinessApiTests(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(product.status_code, 201, product.text)
+                stock = await client.post(
+                    "/api/v1/inventory/adjustments",
+                    json={
+                        "product_id": product.json()["id"],
+                        "warehouse_id": warehouse.json()["id"],
+                        "quantity_delta": "10",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(stock.status_code, 201, stock.text)
 
                 serialized_product = await client.post(
                     "/api/v1/products",
@@ -496,6 +712,7 @@ class BusinessApiTests(unittest.TestCase):
                     available_serial = ProductSerial(
                         product_id=serialized_product.json()["id"],
                         chassis_no=f"CHASSIS-{suffix}",
+                        warehouse_id=warehouse.json()["id"],
                         status="available",
                     )
                     unavailable_serial = ProductSerial(
@@ -507,9 +724,27 @@ class BusinessApiTests(unittest.TestCase):
                     session.flush()
                     available_serial_id = available_serial.id
                     unavailable_serial_id = unavailable_serial.id
+                    session.add(
+                        Inventory(
+                            product_id=serialized_product.json()["id"],
+                            warehouse_id=warehouse.json()["id"],
+                            quantity=Decimal("1"),
+                        )
+                    )
+                    session.add(
+                        StockMovement(
+                            product_id=serialized_product.json()["id"],
+                            warehouse_id=warehouse.json()["id"],
+                            serial_id=available_serial_id,
+                            movement_type="opening",
+                            quantity_change=Decimal("1"),
+                            ref_type="integration_fixture",
+                        )
+                    )
 
                 line = {
                     "product_id": product.json()["id"],
+                    "warehouse_id": warehouse.json()["id"],
                     "description": "Invoice test item",
                     "hsn_sac": hsn_code,
                     "unit": "PCS",
@@ -779,6 +1014,231 @@ class BusinessApiTests(unittest.TestCase):
                 self.assertEqual(updated_draft.status_code, 200, updated_draft.text)
                 self.assertEqual(updated_draft.json()["doc_type"], "proforma")
                 self.assertIsNone(updated_draft.json()["invoice_number"])
+                for action in ("approve", "issue", "cancel"):
+                    response = await client.post(
+                        f"/api/v1/invoices/{draft_id}/{action}",
+                        json={"reason": "Not applicable for proforma"},
+                        headers=headers,
+                    )
+                    self.assertEqual(response.status_code, 409, response.text)
+                converted = await client.post(
+                    f"/api/v1/invoices/{draft_id}/convert-to-tax-invoice",
+                    headers=headers,
+                )
+                self.assertEqual(converted.status_code, 200, converted.text)
+                self.assertEqual(converted.json()["doc_type"], "tax_invoice")
+                self.assertEqual(converted.json()["status"], "draft")
+                self.assertIsNone(converted.json()["invoice_number"])
+                with self.factory() as session:
+                    self.assertEqual(session.get(ProductSerial, available_serial_id).status, "available")
+                    self.assertEqual(
+                        session.scalar(
+                            text(
+                                "SELECT count(*) FROM stock_movements "
+                                "WHERE ref_type = 'invoice' AND ref_id = :id"
+                            ),
+                            {"id": converted.json()["id"]},
+                        ),
+                        0,
+                    )
+                    draft_actions = session.scalars(
+                        select(AuditLog.action).where(
+                            AuditLog.entity_type == "invoice",
+                            AuditLog.entity_id == draft_id,
+                        )
+                    ).all()
+                    self.assertIn("create_draft", draft_actions)
+                    self.assertIn("update_draft", draft_actions)
+                    self.assertIn(
+                        "convert_proforma",
+                        session.scalars(
+                            select(AuditLog.action).where(
+                                AuditLog.entity_type == "invoice",
+                                AuditLog.entity_id == converted.json()["id"],
+                            )
+                        ).all(),
+                    )
+
+                disposable_draft = await client.post(
+                    "/api/v1/invoices",
+                    json={"customer_id": customer_id, "place_of_supply_code": "29", "lines": [line]},
+                    headers=headers,
+                )
+                self.assertEqual(disposable_draft.status_code, 201, disposable_draft.text)
+                deleted_draft = await client.delete(
+                    f"/api/v1/invoices/{disposable_draft.json()['id']}",
+                    headers=headers,
+                )
+                self.assertEqual(deleted_draft.status_code, 204, deleted_draft.text)
+                with self.factory() as session:
+                    self.assertIn(
+                        "delete_draft",
+                        session.scalars(
+                            select(AuditLog.action).where(
+                                AuditLog.entity_type == "invoice",
+                                AuditLog.entity_id == disposable_draft.json()["id"],
+                            )
+                        ).all(),
+                    )
+
+                issue_draft = await client.post(
+                    "/api/v1/invoices",
+                    json={
+                        "customer_id": customer_id,
+                        "place_of_supply_code": "29",
+                        "invoice_date": date.today().isoformat(),
+                        "lines": [line],
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(issue_draft.status_code, 201, issue_draft.text)
+                issue_id = issue_draft.json()["id"]
+                unauthenticated_issue = await client.post(f"/api/v1/invoices/{issue_id}/issue")
+                self.assertEqual(unauthenticated_issue.status_code, 401)
+                update_only_issue = await client.post(f"/api/v1/invoices/{issue_id}/issue", headers=update_headers)
+                self.assertEqual(update_only_issue.status_code, 403)
+                approved = await client.post(f"/api/v1/invoices/{issue_id}/approve", headers=headers)
+                self.assertEqual(approved.status_code, 200, approved.text)
+                unauthenticated_approve = await client.post(f"/api/v1/invoices/{issue_id}/approve")
+                self.assertEqual(unauthenticated_approve.status_code, 401)
+                update_only_approve = await client.post(f"/api/v1/invoices/{issue_id}/approve", headers=update_headers)
+                self.assertEqual(update_only_approve.status_code, 403)
+                issued = await client.post(
+                    f"/api/v1/invoices/{issue_id}/issue",
+                    headers={**headers, "Idempotency-Key": f"issue-{suffix}"},
+                )
+                self.assertEqual(issued.status_code, 200, issued.text)
+                invoice_number = issued.json()["invoice_number"]
+                self.assertIsNotNone(invoice_number)
+                self.assertLessEqual(len(invoice_number), 16)
+                repeated_issue = await client.post(f"/api/v1/invoices/{issue_id}/issue", headers=headers)
+                self.assertEqual(repeated_issue.status_code, 409)
+                self.assertIn(invoice_number, repeated_issue.text)
+                unauthenticated_cancel = await client.post(
+                    f"/api/v1/invoices/{issue_id}/cancel",
+                    json={"reason": "Missing authentication"},
+                )
+                self.assertEqual(unauthenticated_cancel.status_code, 401)
+                update_only_cancel = await client.post(
+                    f"/api/v1/invoices/{issue_id}/cancel",
+                    json={"reason": "Missing cancel permission"},
+                    headers=update_headers,
+                )
+                self.assertEqual(update_only_cancel.status_code, 403)
+                with self.factory() as session:
+                    inventory = session.get(Inventory, (product.json()["id"], warehouse.json()["id"]))
+                    self.assertEqual(inventory.quantity, Decimal("9"))
+                    self.assertEqual(
+                        session.scalar(
+                            select(JournalEntry.id).where(
+                                JournalEntry.source_type == "invoice",
+                                JournalEntry.source_id == issue_id,
+                                JournalEntry.reverses_entry_id.is_(None),
+                            ).limit(1)
+                        ) is not None,
+                        True,
+                    )
+                    posted_accounts = {
+                        account: (Decimal(debit), Decimal(credit))
+                        for account, debit, credit in session.execute(text(
+                            "SELECT jel.account_code, sum(jel.debit), sum(jel.credit) "
+                            "FROM journal_entry_lines jel JOIN journal_entries je ON je.id = jel.entry_id "
+                            "WHERE je.source_type = 'invoice' AND je.source_id = :id "
+                            "GROUP BY jel.account_code"
+                        ), {"id": issue_id}).all()
+                    }
+                    self.assertEqual(posted_accounts["1100"], (Decimal("113.00"), Decimal("0")))
+                    self.assertEqual(posted_accounts["4000"], (Decimal("0"), Decimal("95.00")))
+                    self.assertEqual(posted_accounts["2102"], (Decimal("0"), Decimal("17.10")))
+                    self.assertEqual(posted_accounts["2103"], (Decimal("0"), Decimal("0.95")))
+                    self.assertEqual(posted_accounts["4900"], (Decimal("0.05"), Decimal("0")))
+                    self.assertEqual(posted_accounts["5000"], (Decimal("40.00"), Decimal("0")))
+                    self.assertEqual(posted_accounts["1200"], (Decimal("0"), Decimal("40.00")))
+                    self.assertEqual(
+                        sum((debit for debit, _credit in posted_accounts.values()), Decimal("0")),
+                        sum((credit for _debit, credit in posted_accounts.values()), Decimal("0")),
+                    )
+                    self.assertIn(
+                        "issue",
+                        session.scalars(
+                            select(AuditLog.action).where(
+                                AuditLog.entity_type == "invoice",
+                                AuditLog.entity_id == issue_id,
+                            )
+                        ).all(),
+                    )
+                pdf = await client.get(f"/api/v1/invoices/{issue_id}/pdf", headers=headers)
+                self.assertEqual(pdf.status_code, 200, pdf.text)
+                self.assertEqual(pdf.headers["content-type"], "application/pdf")
+                pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(pdf.content)).pages)
+                self.assertIn(invoice_number, pdf_text)
+                self.assertIn(gstin_for("06"), pdf_text)
+                self.assertIn(amount_in_words(Decimal(issued.json()["grand_total"])), pdf_text)
+                with self.factory() as session:
+                    self.assertIn(
+                        "download_pdf",
+                        session.scalars(
+                            select(AuditLog.action).where(
+                                AuditLog.entity_type == "invoice",
+                                AuditLog.entity_id == issue_id,
+                            )
+                        ).all(),
+                    )
+
+                many_line_body = {
+                    "customer_id": customer_id,
+                    "place_of_supply_code": "29",
+                    "invoice_date": date.today().isoformat(),
+                    "lines": [
+                        {
+                            "description": f"PDF line {index}",
+                            "hsn_sac": hsn_code,
+                            "unit": "PCS",
+                            "quantity": "1",
+                            "unit_price": "1.00",
+                            "discount_pct": "0",
+                            "discount_amount": "0",
+                            "gst_rate": rate,
+                            "cess_rate": "0",
+                        }
+                        for index in range(80)
+                    ],
+                }
+                empty_bank_settings = {
+                    **settings_payload,
+                    "bank_name": None,
+                    "bank_account_no": None,
+                    "bank_ifsc": None,
+                    "upi_id": None,
+                }
+                saved_empty_bank_settings = await client.put(
+                    "/api/v1/settings",
+                    json=empty_bank_settings,
+                    headers=headers,
+                )
+                self.assertEqual(saved_empty_bank_settings.status_code, 200, saved_empty_bank_settings.text)
+                many_line_draft = await client.post("/api/v1/invoices", json=many_line_body, headers=headers)
+                self.assertEqual(many_line_draft.status_code, 201, many_line_draft.text)
+                many_line_id = many_line_draft.json()["id"]
+                many_line_approval = await client.post(f"/api/v1/invoices/{many_line_id}/approve", headers=headers)
+                self.assertEqual(many_line_approval.status_code, 200, many_line_approval.text)
+                many_line_issue = await client.post(f"/api/v1/invoices/{many_line_id}/issue", headers=headers)
+                self.assertEqual(many_line_issue.status_code, 200, many_line_issue.text)
+                many_line_pdf = await client.get(f"/api/v1/invoices/{many_line_id}/pdf", headers=headers)
+                self.assertEqual(many_line_pdf.status_code, 200, many_line_pdf.text)
+                many_line_reader = PdfReader(BytesIO(many_line_pdf.content))
+                self.assertGreater(len(many_line_reader.pages), 1)
+                many_line_text = "\n".join(page.extract_text() or "" for page in many_line_reader.pages)
+                self.assertIn("Description / HSN", many_line_text)
+                self.assertNotIn(f"TEST-SECRET-{suffix}", many_line_text)
+                self.assertNotIn("TESTIFSC0001", many_line_text)
+                self.assertNotIn("Bank:", many_line_text)
+                many_line_cancel = await client.post(
+                    f"/api/v1/invoices/{many_line_id}/cancel",
+                    json={"reason": "Multi page PDF test cleanup"},
+                    headers=headers,
+                )
+                self.assertEqual(many_line_cancel.status_code, 200, many_line_cancel.text)
 
                 with self.factory.begin() as session:
                     invoice_triggers = set(session.scalars(text(
@@ -787,24 +1247,366 @@ class BusinessApiTests(unittest.TestCase):
                     )).all())
                 self.assertTrue({"invoices_guard", "invoice_items_guard"}.issubset(invoice_triggers))
 
-                with self.factory.begin() as session:
-                    session.execute(
-                        text("UPDATE invoices SET status = 'issued', invoice_number = :number WHERE id = :id"),
-                        {"number": f"TEST-{suffix}", "id": draft_id},
-                    )
                 with self.factory() as session:
                     with self.assertRaises(DBAPIError):
-                        session.execute(
-                            text("UPDATE invoices SET grand_total = grand_total + 1 WHERE id = :id"),
-                            {"id": draft_id},
-                        )
-                    session.rollback()
+                        with session.begin_nested():
+                            session.execute(
+                                text("UPDATE invoices SET notes = 'direct edit' WHERE id = :id"),
+                                {"id": issue_id},
+                            )
                     with self.assertRaises(DBAPIError):
-                        session.execute(
-                            text("UPDATE invoice_items SET description = description || ' changed' WHERE invoice_id = :id"),
-                            {"id": draft_id},
-                        )
+                        with session.begin_nested():
+                            session.execute(
+                                text("UPDATE invoice_items SET description = description || ' changed' WHERE invoice_id = :id"),
+                                {"id": issue_id},
+                            )
+                    with self.assertRaises(DBAPIError):
+                        with session.begin_nested():
+                            session.execute(
+                                text("DELETE FROM journal_entry_lines WHERE entry_id IN "
+                                     "(SELECT id FROM journal_entries WHERE source_type = 'invoice' AND source_id = :id)"),
+                                {"id": issue_id},
+                            )
+                    with self.assertRaises(DBAPIError):
+                        with session.begin_nested():
+                            session.execute(
+                                text("UPDATE invoices SET status = 'issued', invoice_number = :number WHERE id = :id"),
+                                {"number": f"SQL-{suffix}", "id": converted.json()["id"]},
+                            )
+                            session.execute(
+                                text("UPDATE invoices SET notes = 'direct edit' WHERE id = :id"),
+                                {"id": converted.json()["id"]},
+                            )
                     session.rollback()
+
+                cancelled = await client.post(
+                    f"/api/v1/invoices/{issue_id}/cancel",
+                    json={"reason": "Customer requested cancellation"},
+                    headers=headers,
+                )
+                self.assertEqual(cancelled.status_code, 200, cancelled.text)
+                self.assertEqual(cancelled.json()["status"], "cancelled")
+                with self.factory() as session:
+                    self.assertIn(
+                        "cancel",
+                        session.scalars(
+                            select(AuditLog.action).where(
+                                AuditLog.entity_type == "invoice",
+                                AuditLog.entity_id == issue_id,
+                            )
+                        ).all(),
+                    )
+                    cancelled_account_balances = session.execute(
+                        text(
+                            "SELECT line.account_code, sum(line.debit), sum(line.credit) "
+                            "FROM journal_entry_lines line "
+                            "JOIN journal_entries entry ON entry.id = line.entry_id "
+                            "WHERE entry.source_type = 'invoice' AND entry.source_id = :invoice_id "
+                            "GROUP BY line.account_code"
+                        ),
+                        {"invoice_id": issue_id},
+                    ).all()
+                    self.assertTrue(cancelled_account_balances)
+                    for _account, debit, credit in cancelled_account_balances:
+                        self.assertEqual(Decimal(debit), Decimal(credit))
+                    self.assertGreater(
+                        session.scalar(
+                            select(func.count(JournalEntry.id)).where(
+                                JournalEntry.source_type == "invoice",
+                                JournalEntry.source_id == issue_id,
+                                JournalEntry.reverses_entry_id.is_not(None),
+                            )
+                        ),
+                        0,
+                    )
+                cancel_twice = await client.post(
+                    f"/api/v1/invoices/{issue_id}/cancel",
+                    json={"reason": "Cancel it one more time"},
+                    headers=headers,
+                )
+                self.assertEqual(cancel_twice.status_code, 409)
+                cancelled_pdf = await client.get(f"/api/v1/invoices/{issue_id}/pdf", headers=headers)
+                self.assertEqual(cancelled_pdf.status_code, 200, cancelled_pdf.text)
+                cancelled_pdf_text = "\n".join(
+                    page.extract_text() or "" for page in PdfReader(BytesIO(cancelled_pdf.content)).pages
+                )
+                self.assertIn("CANCELLED", cancelled_pdf_text)
+                with self.factory() as session:
+                    inventory = session.get(Inventory, (product.json()["id"], warehouse.json()["id"]))
+                    self.assertEqual(inventory.quantity, Decimal("10"))
+                    self.assertEqual(
+                        sum(
+                            (row.quantity_change for row in session.scalars(
+                                select(StockMovement).where(
+                                    StockMovement.ref_type == "invoice",
+                                    StockMovement.ref_id == issue_id,
+                                )
+                            ).all()),
+                            Decimal("0"),
+                        ),
+                        Decimal("0"),
+                    )
+
+                intra_draft = await client.post(
+                    "/api/v1/invoices",
+                    json={
+                        "customer_id": customer_id,
+                        "place_of_supply_code": "06",
+                        "invoice_date": date.today().isoformat(),
+                        "lines": [line],
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(intra_draft.status_code, 201, intra_draft.text)
+                intra_id = intra_draft.json()["id"]
+                intra_approved = await client.post(f"/api/v1/invoices/{intra_id}/approve", headers=headers)
+                self.assertEqual(intra_approved.status_code, 200, intra_approved.text)
+                intra_issued = await client.post(f"/api/v1/invoices/{intra_id}/issue", headers=headers)
+                self.assertEqual(intra_issued.status_code, 200, intra_issued.text)
+                with self.factory() as session:
+                    intra_accounts = {
+                        account: (Decimal(debit), Decimal(credit))
+                        for account, debit, credit in session.execute(text(
+                            "SELECT jel.account_code, sum(jel.debit), sum(jel.credit) "
+                            "FROM journal_entry_lines jel JOIN journal_entries je ON je.id = jel.entry_id "
+                            "WHERE je.source_type = 'invoice' AND je.source_id = :id "
+                            "GROUP BY jel.account_code"
+                        ), {"id": intra_id}).all()
+                    }
+                    self.assertEqual(intra_accounts["2100"], (Decimal("0"), Decimal("8.55")))
+                    self.assertEqual(intra_accounts["2101"], (Decimal("0"), Decimal("8.55")))
+                    self.assertNotIn("2102", intra_accounts)
+                intra_cancel = await client.post(
+                    f"/api/v1/invoices/{intra_id}/cancel",
+                    json={"reason": "Intra-state posting test cleanup"},
+                    headers=headers,
+                )
+                self.assertEqual(intra_cancel.status_code, 200, intra_cancel.text)
+
+                concurrent_draft = await client.post(
+                    "/api/v1/invoices",
+                    json={"customer_id": customer_id, "place_of_supply_code": "29", "lines": [line]},
+                    headers=headers,
+                )
+                self.assertEqual(concurrent_draft.status_code, 201, concurrent_draft.text)
+                concurrent_id = concurrent_draft.json()["id"]
+                concurrent_approval = await client.post(f"/api/v1/invoices/{concurrent_id}/approve", headers=headers)
+                self.assertEqual(concurrent_approval.status_code, 200, concurrent_approval.text)
+                same_draft_responses = await asyncio.gather(*[
+                    client.post(f"/api/v1/invoices/{concurrent_id}/issue", headers=headers)
+                    for _ in range(5)
+                ])
+                self.assertEqual(sum(response.status_code == 200 for response in same_draft_responses), 1)
+                self.assertEqual(sum(response.status_code == 409 for response in same_draft_responses), 4)
+                concurrent_number = next(response.json()["invoice_number"] for response in same_draft_responses if response.status_code == 200)
+                concurrent_cancel = await client.post(
+                    f"/api/v1/invoices/{concurrent_id}/cancel",
+                    json={"reason": "Parallel request test cleanup"},
+                    headers=headers,
+                )
+                self.assertEqual(concurrent_cancel.status_code, 200, concurrent_cancel.text)
+
+                adjustment = await client.post(
+                    "/api/v1/inventory/adjustments",
+                    json={"product_id": product.json()["id"], "warehouse_id": warehouse.json()["id"], "quantity_delta": "-9"},
+                    headers=headers,
+                )
+                self.assertEqual(adjustment.status_code, 201, adjustment.text)
+                competing_drafts = []
+                for _ in range(2):
+                    competing = await client.post(
+                        "/api/v1/invoices",
+                        json={"customer_id": customer_id, "place_of_supply_code": "29", "lines": [line]},
+                        headers=headers,
+                    )
+                    self.assertEqual(competing.status_code, 201, competing.text)
+                    competing_approved = await client.post(
+                        f"/api/v1/invoices/{competing.json()['id']}/approve",
+                        headers=headers,
+                    )
+                    self.assertEqual(competing_approved.status_code, 200, competing_approved.text)
+                    competing_drafts.append(competing.json()["id"])
+                competing_results = await asyncio.gather(*[
+                    client.post(f"/api/v1/invoices/{candidate}/issue", headers=headers)
+                    for candidate in competing_drafts
+                ])
+                self.assertEqual(sum(response.status_code == 200 for response in competing_results), 1)
+                shortage = next(response for response in competing_results if response.status_code == 409)
+                self.assertIn("shortages", shortage.json()["detail"])
+                winner_id = competing_drafts[next(index for index, response in enumerate(competing_results) if response.status_code == 200)]
+                with self.factory() as session:
+                    self.assertEqual(
+                        session.get(Inventory, (product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("0"),
+                    )
+                winner_cancel = await client.post(
+                    f"/api/v1/invoices/{winner_id}/cancel",
+                    json={"reason": "Last unit test cleanup"},
+                    headers=headers,
+                )
+                self.assertEqual(winner_cancel.status_code, 200, winner_cancel.text)
+                restored = await client.post(
+                    "/api/v1/inventory/adjustments",
+                    json={"product_id": product.json()["id"], "warehouse_id": warehouse.json()["id"], "quantity_delta": "9"},
+                    headers=headers,
+                )
+                self.assertEqual(restored.status_code, 201, restored.text)
+
+                failed_draft = await client.post(
+                    "/api/v1/invoices",
+                    json={"customer_id": customer_id, "place_of_supply_code": "29", "lines": [line]},
+                    headers=headers,
+                )
+                self.assertEqual(failed_draft.status_code, 201, failed_draft.text)
+                failed_id = failed_draft.json()["id"]
+                failed_approval = await client.post(f"/api/v1/invoices/{failed_id}/approve", headers=headers)
+                self.assertEqual(failed_approval.status_code, 200, failed_approval.text)
+                with self.factory() as session:
+                    before_stock = session.get(Inventory, (product.json()["id"], warehouse.json()["id"])).quantity
+                    before_sequence = session.scalar(text(
+                        "SELECT coalesce(max(last_number), 0) FROM number_sequences WHERE series LIKE 'tax_invoice:TST:%'"
+                    ))
+                    before_movements = session.scalar(text(
+                        "SELECT count(*) FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = :id"
+                    ), {"id": failed_id})
+                    before_journals = session.scalar(text(
+                        "SELECT count(*) FROM journal_entries WHERE source_type = 'invoice' AND source_id = :id"
+                    ), {"id": failed_id})
+                with patch("app.api.v1.invoices.post_sales_invoice", side_effect=RuntimeError("injected posting failure")):
+                    async with AsyncClient(
+                        transport=ASGITransport(app=self.app, raise_app_exceptions=False),
+                        base_url="http://testserver",
+                    ) as failing_client:
+                        failed_issue = await failing_client.post(f"/api/v1/invoices/{failed_id}/issue", headers=headers)
+                self.assertEqual(failed_issue.status_code, 500)
+                with self.factory() as session:
+                    self.assertEqual(session.get(Inventory, (product.json()["id"], warehouse.json()["id"])).quantity, before_stock)
+                    failed_invoice = session.get(Invoice, failed_id)
+                    self.assertEqual(failed_invoice.status, "approved")
+                    self.assertIsNone(failed_invoice.invoice_number)
+                    self.assertEqual(session.scalar(text(
+                        "SELECT coalesce(max(last_number), 0) FROM number_sequences WHERE series LIKE 'tax_invoice:TST:%'"
+                    )), before_sequence)
+                    self.assertEqual(session.scalar(text(
+                        "SELECT count(*) FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = :id"
+                    ), {"id": failed_id}), before_movements)
+                    self.assertEqual(session.scalar(text(
+                        "SELECT count(*) FROM journal_entries WHERE source_type = 'invoice' AND source_id = :id"
+                    ), {"id": failed_id}), before_journals)
+
+                failed_serial_draft = await client.post(
+                    "/api/v1/invoices",
+                    json={
+                        "customer_id": customer_id,
+                        "place_of_supply_code": "29",
+                        "lines": [serialized_line],
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(failed_serial_draft.status_code, 201, failed_serial_draft.text)
+                failed_serial_id = failed_serial_draft.json()["id"]
+                failed_serial_approval = await client.post(
+                    f"/api/v1/invoices/{failed_serial_id}/approve",
+                    headers=headers,
+                )
+                self.assertEqual(failed_serial_approval.status_code, 200, failed_serial_approval.text)
+                with self.factory() as session:
+                    serial_sequence_before = session.scalar(text(
+                        "SELECT coalesce(max(last_number), 0) FROM number_sequences WHERE series LIKE 'tax_invoice:TST:%'"
+                    ))
+                    serial_movements_before = session.scalar(text(
+                        "SELECT count(*) FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = :id"
+                    ), {"id": failed_serial_id})
+                with patch("app.api.v1.invoices.post_sales_invoice", side_effect=RuntimeError("injected serial posting failure")):
+                    async with AsyncClient(
+                        transport=ASGITransport(app=self.app, raise_app_exceptions=False),
+                        base_url="http://testserver",
+                    ) as failing_client:
+                        failed_serial_issue = await failing_client.post(
+                            f"/api/v1/invoices/{failed_serial_id}/issue",
+                            headers=headers,
+                        )
+                self.assertEqual(failed_serial_issue.status_code, 500)
+                with self.factory() as session:
+                    failed_serial_invoice = session.get(Invoice, failed_serial_id)
+                    self.assertEqual(failed_serial_invoice.status, "approved")
+                    self.assertIsNone(failed_serial_invoice.invoice_number)
+                    self.assertEqual(session.get(ProductSerial, available_serial_id).status, "available")
+                    self.assertEqual(
+                        session.get(Inventory, (serialized_product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("1"),
+                    )
+                    self.assertEqual(session.scalar(text(
+                        "SELECT coalesce(max(last_number), 0) FROM number_sequences WHERE series LIKE 'tax_invoice:TST:%'"
+                    )), serial_sequence_before)
+                    self.assertEqual(session.scalar(text(
+                        "SELECT count(*) FROM stock_movements WHERE ref_type = 'invoice' AND ref_id = :id"
+                    ), {"id": failed_serial_id}), serial_movements_before)
+                    self.assertEqual(session.scalar(text(
+                        "SELECT count(*) FROM journal_entries WHERE source_type = 'invoice' AND source_id = :id"
+                    ), {"id": failed_serial_id}), 0)
+
+                parallel_drafts = []
+                for _ in range(20):
+                    parallel_draft = await client.post(
+                        "/api/v1/invoices",
+                        json={"customer_id": customer_id, "place_of_supply_code": "29", "lines": [line]},
+                        headers=headers,
+                    )
+                    self.assertEqual(parallel_draft.status_code, 201, parallel_draft.text)
+                    parallel_id = parallel_draft.json()["id"]
+                    parallel_approval = await client.post(f"/api/v1/invoices/{parallel_id}/approve", headers=headers)
+                    self.assertEqual(parallel_approval.status_code, 200, parallel_approval.text)
+                    parallel_drafts.append(parallel_id)
+                extra_stock = await client.post(
+                    "/api/v1/inventory/adjustments",
+                    json={"product_id": product.json()["id"], "warehouse_id": warehouse.json()["id"], "quantity_delta": "20"},
+                    headers=headers,
+                )
+                self.assertEqual(extra_stock.status_code, 201, extra_stock.text)
+                parallel_issues = await asyncio.gather(*[
+                    client.post(f"/api/v1/invoices/{candidate}/issue", headers=headers)
+                    for candidate in parallel_drafts
+                ])
+                self.assertTrue(all(response.status_code == 200 for response in parallel_issues), [response.text for response in parallel_issues if response.status_code != 200])
+                parallel_numbers = sorted(
+                    int(response.json()["invoice_number"].rsplit("/", 1)[1])
+                    for response in parallel_issues
+                )
+                self.assertEqual(len(set(parallel_numbers)), 20)
+                self.assertEqual(parallel_numbers, list(range(parallel_numbers[0], parallel_numbers[0] + 20)))
+                for invoice_id in parallel_drafts:
+                    parallel_cancel = await client.post(
+                        f"/api/v1/invoices/{invoice_id}/cancel",
+                        json={"reason": "Concurrency test cleanup"},
+                        headers=headers,
+                    )
+                    self.assertEqual(parallel_cancel.status_code, 200, parallel_cancel.text)
+
+                serial_issue_id = serial_draft.json()["id"]
+                serial_approved = await client.post(f"/api/v1/invoices/{serial_issue_id}/approve", headers=headers)
+                self.assertEqual(serial_approved.status_code, 200, serial_approved.text)
+                serial_issued = await client.post(f"/api/v1/invoices/{serial_issue_id}/issue", headers=headers)
+                self.assertEqual(serial_issued.status_code, 200, serial_issued.text)
+                self.assertNotEqual(serial_issued.json()["invoice_number"], invoice_number)
+                with self.factory() as session:
+                    self.assertEqual(session.get(ProductSerial, available_serial_id).status, "sold")
+                    self.assertEqual(
+                        session.get(Inventory, (serialized_product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("0"),
+                    )
+                serial_cancelled = await client.post(
+                    f"/api/v1/invoices/{serial_issue_id}/cancel",
+                    json={"reason": "Serialized product return"},
+                    headers=headers,
+                )
+                self.assertEqual(serial_cancelled.status_code, 200, serial_cancelled.text)
+                with self.factory() as session:
+                    self.assertEqual(session.get(ProductSerial, available_serial_id).status, "available")
+                    self.assertEqual(
+                        session.get(Inventory, (serialized_product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("1"),
+                    )
 
                 deleted_customer = await client.delete(f"/api/v1/customers/{customer_id}", headers=headers)
                 self.assertEqual(deleted_customer.status_code, 204)

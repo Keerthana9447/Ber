@@ -4,9 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useFieldArray, useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
-import { Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, LoadingState, useToast } from "../components/ui";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, LoadingState, Modal, useToast } from "../components/ui";
 import { InvoiceReadinessBanner } from "../components/InvoiceReadinessBanner";
-import { api, ApiError } from "../lib/api";
+import { api, apiBlob, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatINR } from "../lib/format";
 
@@ -34,7 +34,8 @@ type Product = {
   is_service: boolean;
   is_serialized: boolean;
 };
-type Serial = { id: number; chassis_no: string | null; vin: string | null; motor_no: string | null; battery_serial: string | null };
+type Serial = { id: number; chassis_no: string | null; vin: string | null; motor_no: string | null; battery_serial: string | null; warehouse_id: number | null };
+type Warehouse = { id: number; code: string; name: string };
 type InvoiceListRow = {
   id: number;
   invoice_number: string | null;
@@ -43,7 +44,7 @@ type InvoiceListRow = {
   doc_type: string;
   invoice_date: string;
   due_date: string | null;
-  status: "draft" | "issued";
+  status: "draft" | "approved" | "issued" | "cancelled";
   grand_total: string;
 };
 type InvoicePageData = { items: InvoiceListRow[]; total: number };
@@ -51,6 +52,8 @@ type InvoiceLineResponse = {
   id?: number;
   product_id: number | null;
   serial_id: number | null;
+  warehouse_id: number | null;
+  is_service: boolean;
   description: string;
   hsn_sac: string;
   unit: string | null;
@@ -67,6 +70,7 @@ type InvoiceLineResponse = {
 };
 type InvoiceDraft = {
   id: number;
+  invoice_number: string | null;
   customer_id: number;
   place_of_supply_code: string;
   doc_type: "tax_invoice" | "bill_of_supply" | "proforma";
@@ -76,11 +80,19 @@ type InvoiceDraft = {
   payment_terms: string | null;
   notes: string | null;
   status: string;
+  taxable_total: string;
+  cgst_total: string;
+  sgst_total: string;
+  igst_total: string;
+  cess_total: string;
+  round_off: string;
+  grand_total: string;
   lines: InvoiceLineResponse[];
 };
 type PreviewLine = {
   product_id: number | null;
   serial_id: number | null;
+  warehouse_id: number | null;
   description: string;
   hsn_sac: string;
   unit: string;
@@ -131,6 +143,8 @@ export type Preview = {
 const lineSchema = z.object({
   product_id: z.string(),
   serial_id: z.string(),
+  warehouse_id: z.string(),
+  is_service: z.boolean(),
   description: z.string(),
   hsn_sac: z.string(),
   unit: z.string(),
@@ -145,6 +159,7 @@ const lineSchema = z.object({
   if (!line.product_id && !line.description.trim()) context.addIssue({ code: "custom", path: ["description"], message: "Add a product or free-description line" });
   if (!line.hsn_sac) context.addIssue({ code: "custom", path: ["hsn_sac"], message: "HSN/SAC is required" });
   if (line.product_id && !line.unit_price) context.addIssue({ code: "custom", path: ["unit_price"], message: "Unit price is required" });
+  if (line.product_id && !line.is_service && !line.warehouse_id) context.addIssue({ code: "custom", path: ["warehouse_id"], message: "Select a warehouse for this stocked product" });
 });
 
 export const invoiceDraftSchema = z.object({
@@ -164,6 +179,8 @@ type ValidationIssue = { line?: number; field?: string; message: string };
 const blankLine: InvoiceDraftFormValues["lines"][number] = {
   product_id: "",
   serial_id: "",
+  warehouse_id: "",
+  is_service: false,
   description: "",
   hsn_sac: "",
   unit: "",
@@ -213,6 +230,8 @@ function formFromDraft(draft: InvoiceDraft): InvoiceDraftFormValues {
     lines: draft.lines.map((line) => ({
       product_id: line.product_id === null ? "" : String(line.product_id),
       serial_id: line.serial_id === null ? "" : String(line.serial_id),
+      warehouse_id: line.warehouse_id === null ? "" : String(line.warehouse_id),
+      is_service: line.is_service,
       description: line.description,
       hsn_sac: line.hsn_sac,
       unit: line.unit ?? "",
@@ -236,6 +255,7 @@ function previewBody(values: InvoiceDraftFormValues) {
     lines: values.lines.map((line) => ({
       product_id: line.product_id ? Number(line.product_id) : null,
       serial_id: line.serial_id ? Number(line.serial_id) : null,
+      warehouse_id: line.warehouse_id && !line.is_service ? Number(line.warehouse_id) : null,
       description: line.description || null,
       hsn_sac: line.hsn_sac || null,
       unit: line.unit || null,
@@ -323,6 +343,11 @@ function InvoiceLineEditor({
     retry: false,
   });
   const selectedProduct = listedProduct ?? selectedProductQuery.data;
+  const productOptions = useQuery({
+    queryKey: ["invoice-product-options"],
+    queryFn: ({ signal }) => api<{ warehouses: Warehouse[] }>("/product-options", { signal }),
+    retry: false,
+  });
   const serials = useQuery({
     queryKey: ["invoice-product-serials", productId, serialSearch],
     queryFn: ({ signal }) => api<Serial[]>(`/products/${productId}/serials`, { query: { q: serialSearch }, signal }),
@@ -332,10 +357,19 @@ function InvoiceLineEditor({
   const lineError = (field: string) => lineErrors.find((issue) => issue.field === field)?.message;
   const line = form.watch(`lines.${index}`);
 
+  useEffect(() => {
+    if (selectedProduct && !selectedProduct.is_service && !selectedProduct.is_serialized
+      && !form.getValues(`lines.${index}.warehouse_id`) && productOptions.data?.warehouses[0]) {
+      form.setValue(`lines.${index}.warehouse_id`, String(productOptions.data.warehouses[0].id), { shouldValidate: true });
+    }
+  }, [selectedProduct, productOptions.data, form, index]);
+
   function chooseProduct(value: string) {
     const product = products.data?.items.find((candidate) => String(candidate.id) === value);
     form.setValue(`lines.${index}.product_id`, value, { shouldValidate: true });
     form.setValue(`lines.${index}.serial_id`, "");
+    form.setValue(`lines.${index}.warehouse_id`, "");
+    form.setValue(`lines.${index}.is_service`, product?.is_service ?? false);
     if (!product) return;
     form.setValue(`lines.${index}.description`, product.name);
     form.setValue(`lines.${index}.hsn_sac`, product.hsn_sac);
@@ -343,6 +377,9 @@ function InvoiceLineEditor({
     form.setValue(`lines.${index}.unit_price`, product.selling_price);
     form.setValue(`lines.${index}.gst_rate`, product.gst_rate);
     form.setValue(`lines.${index}.cess_rate`, product.cess_rate);
+    if (!product.is_service && !product.is_serialized && productOptions.data?.warehouses[0]) {
+      form.setValue(`lines.${index}.warehouse_id`, String(productOptions.data.warehouses[0].id), { shouldValidate: true });
+    }
   }
 
   return (
@@ -363,7 +400,11 @@ function InvoiceLineEditor({
       {selectedProduct?.is_serialized && (
         <label className="block text-sm font-medium text-slate-700">Available serial
           <input value={serialSearch} onChange={(event) => setSerialSearch(event.target.value)} placeholder="Search chassis, VIN or motor…" className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm" />
-          <select {...form.register(`lines.${index}.serial_id`)} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm">
+          <select {...form.register(`lines.${index}.serial_id`)} onChange={(event) => {
+            form.setValue(`lines.${index}.serial_id`, event.target.value, { shouldValidate: true });
+            const serial = serials.data?.find((item) => String(item.id) === event.target.value);
+            form.setValue(`lines.${index}.warehouse_id`, serial?.warehouse_id ? String(serial.warehouse_id) : "", { shouldValidate: true });
+          }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm">
             <option value="">Select available serial</option>
             {(serials.data ?? []).map((serial) => {
               const label = [serial.chassis_no, serial.vin, serial.motor_no, serial.battery_serial].filter(Boolean).join(" · ");
@@ -376,6 +417,21 @@ function InvoiceLineEditor({
       )}
       {!productId && (
         <Field label="Description" {...form.register(`lines.${index}.description`)} error={form.formState.errors.lines?.[index]?.description?.message ?? lineError("description")} required />
+      )}
+      {selectedProduct && !selectedProduct.is_service && (
+        <label className="block text-sm font-medium text-slate-700">Warehouse
+          <select
+            value={line.warehouse_id}
+            disabled={selectedProduct.is_serialized}
+            onChange={(event) => form.setValue(`lines.${index}.warehouse_id`, event.target.value, { shouldValidate: true })}
+            className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm disabled:bg-ivory-100"
+          >
+            <option value="">Select warehouse</option>
+            {(productOptions.data?.warehouses ?? []).map((warehouse) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+          </select>
+          {(form.formState.errors.lines?.[index]?.warehouse_id?.message ?? lineError("warehouse_id")) && <span role="alert" className="mt-1 block text-xs text-red-700">{form.formState.errors.lines?.[index]?.warehouse_id?.message ?? lineError("warehouse_id")}</span>}
+          {productOptions.isError && <span role="alert" className="mt-1 block text-xs text-red-700">{(productOptions.error as Error).message}</span>}
+        </label>
       )}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Field label="HSN/SAC" {...form.register(`lines.${index}.hsn_sac`)} error={form.formState.errors.lines?.[index]?.hsn_sac?.message ?? lineError("hsn_sac")} required maxLength={8} />
@@ -568,17 +624,78 @@ function InvoiceDraftEditor({
   );
 }
 
+type WorkflowAction = "approve" | "issue" | "convert";
+type WorkflowTarget = { id: number; customer_name: string; action: WorkflowAction };
+
+export function InvoiceReadOnlyView({
+  invoice,
+  onBack,
+  onDownload,
+  downloading,
+  onCancel,
+}: {
+  invoice: InvoiceDraft;
+  onBack: () => void;
+  onDownload: () => void;
+  downloading: boolean;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-forest-900">{invoice.invoice_number ?? "Invoice draft"}</h1>
+          <div className="mt-1 flex items-center gap-2 text-sm text-slate-600"><span>{formatDate(invoice.invoice_date)}</span><Badge>{invoice.status}</Badge></div>
+        </div>
+        <div className="flex gap-2">
+          {(invoice.status === "issued" || invoice.status === "cancelled") && <Button loading={downloading} onClick={onDownload}>Download PDF</Button>}
+          {invoice.status === "issued" && <Button variant="danger" onClick={onCancel}>Cancel invoice</Button>}
+          <Button variant="secondary" onClick={onBack}>Back to invoices</Button>
+        </div>
+      </div>
+      <Card className="overflow-x-auto p-5">
+        <p className="mb-3 text-sm text-slate-600">Customer ID {invoice.customer_id} · Place of supply {invoice.place_of_supply_code}</p>
+        <table className="w-full min-w-[700px] text-left text-sm">
+          <thead><tr className="border-b border-ivory-300"><th className="py-2">Description / HSN</th><th>Qty</th><th>Price</th><th>Taxable</th><th>GST</th></tr></thead>
+          <tbody>{invoice.lines.map((line, index) => (
+            <tr key={line.id ?? index} className="border-b border-ivory-200">
+              <td className="py-2">{line.description} <span className="text-slate-500">({line.hsn_sac})</span></td>
+              <td>{line.quantity} {line.unit}</td><td>{formatINR(line.unit_price)}</td><td>{formatINR(line.taxable_value)}</td><td>{line.gst_rate}%</td>
+            </tr>
+          ))}</tbody>
+        </table>
+        <dl className="ml-auto mt-5 max-w-sm space-y-1 text-sm">
+          <div className="flex justify-between"><dt>Taxable</dt><dd>{formatINR(invoice.taxable_total)}</dd></div>
+          <div className="flex justify-between"><dt>CGST / SGST</dt><dd>{formatINR(invoice.cgst_total)} / {formatINR(invoice.sgst_total)}</dd></div>
+          <div className="flex justify-between"><dt>IGST / Cess</dt><dd>{formatINR(invoice.igst_total)} / {formatINR(invoice.cess_total)}</dd></div>
+          <div className="flex justify-between"><dt>Round off</dt><dd>{formatINR(invoice.round_off)}</dd></div>
+          <div className="flex justify-between border-t border-ivory-300 pt-2 font-semibold"><dt>Grand total</dt><dd>{formatINR(invoice.grand_total)}</dd></div>
+        </dl>
+      </Card>
+    </div>
+  );
+}
+
 export function InvoicesPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const { can } = useAuth();
   const [invoiceStatus, setInvoiceStatus] = useState("");
   const [editId, setEditId] = useState<number | null>(null);
+  const [viewId, setViewId] = useState<number | null>(null);
   const [newDraft, setNewDraft] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<InvoiceListRow | null>(null);
+  const [workflowTarget, setWorkflowTarget] = useState<WorkflowTarget | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<number | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [downloadingId, setDownloadingId] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
   const canCreate = can("sales:create");
   const canUpdate = can("sales:update");
+  const canApprove = can("sales:approve");
+  const canIssue = can("sales:issue");
+  const canCancel = can("sales:cancel");
+  const detailId = editId ?? viewId;
 
   const readiness = useQuery({
     queryKey: ["settings", "readiness"],
@@ -593,9 +710,9 @@ export function InvoicesPage() {
     retry: false,
   });
   const detail = useQuery({
-    queryKey: ["invoices", "detail", editId],
-    queryFn: ({ signal }) => api<InvoiceDraft>(`/invoices/${editId}`, { signal }),
-    enabled: editId !== null,
+    queryKey: ["invoices", "detail", detailId],
+    queryFn: ({ signal }) => api<InvoiceDraft>(`/invoices/${detailId}`, { signal }),
+    enabled: detailId !== null,
     retry: false,
   });
   const remove = useMutation({
@@ -607,6 +724,45 @@ export function InvoicesPage() {
     },
     onError: (error) => toast("error", error instanceof Error ? error.message : "Could not delete invoice draft."),
   });
+  const workflow = useMutation({
+    mutationFn: ({ id, action, reason }: { id: number; action: WorkflowAction | "cancel"; reason?: string }) => {
+      if (action === "cancel") return api<InvoiceDraft>(`/invoices/${id}/cancel`, { method: "POST", body: { reason } });
+      return api<InvoiceDraft>(`/invoices/${id}/${action === "convert" ? "convert-to-tax-invoice" : action}`, { method: "POST" });
+    },
+    onSuccess: async (_result, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["invoices", "list"] }),
+        queryClient.invalidateQueries({ queryKey: ["invoices", "detail", variables.id] }),
+        queryClient.invalidateQueries({ queryKey: ["inventory"] }),
+      ]);
+      const messages = { approve: "Invoice approved.", issue: "Invoice issued.", cancel: "Invoice cancelled and stock restored.", convert: "New tax invoice draft created from proforma." };
+      toast("success", messages[variables.action]);
+      setWorkflowTarget(null);
+      setCancelTarget(null);
+      setCancelReason("");
+    },
+    onError: (error) => toast("error", error instanceof Error ? error.message : "Invoice action failed."),
+  });
+
+  async function downloadPdf(id: number) {
+    setDownloadingId(id);
+    try {
+      const blob = await apiBlob(`/invoices/${id}/pdf`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${detail.data?.invoice_number ?? `invoice-${id}`}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      toast("success", "Invoice PDF downloaded.");
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "Could not download invoice PDF.");
+    } finally {
+      setDownloadingId(null);
+    }
+  }
 
   if (newDraft || editId !== null) {
     if (editId !== null && detail.isLoading) return <LoadingState />;
@@ -625,43 +781,67 @@ export function InvoicesPage() {
       </div>
     );
   }
+  if (viewId !== null) {
+    if (detail.isLoading) return <LoadingState />;
+    if (detail.isError || !detail.data) return <ErrorState message={(detail.error as Error | undefined)?.message ?? "Invoice not found"} onRetry={() => detail.refetch()} />;
+    return (
+      <div className="mx-auto max-w-7xl space-y-4">
+        <InvoiceReadinessBanner />
+        <InvoiceReadOnlyView invoice={detail.data} onBack={() => setViewId(null)} onDownload={() => downloadPdf(viewId)} downloading={downloadingId === viewId} onCancel={() => setCancelTarget(viewId)} />
+        {can("sales:create") && detail.data.doc_type === "proforma" && detail.data.status === "draft" && (
+          <Button onClick={() => setWorkflowTarget({ id: viewId, customer_name: "proforma", action: "convert" })}>Convert to tax invoice draft</Button>
+        )}
+      </div>
+    );
+  }
+
+  const workflowMessages: Record<WorkflowAction, { title: string; message: string; label: string }> = {
+    approve: { title: "Approve invoice", message: "Approve this invoice draft? It remains editable only while it is a draft.", label: "Approve" },
+    issue: { title: "Issue invoice", message: "This assigns an invoice number, reduces stock and posts accounting entries and cannot be edited afterwards.", label: "Issue invoice" },
+    convert: { title: "Convert proforma", message: "Create a new tax-invoice draft with the same customer and lines. The proforma stays unchanged; no number, stock or accounting entry is created.", label: "Create draft" },
+  };
+  const activeWorkflow = workflowTarget ? workflowMessages[workflowTarget.action] : null;
 
   return (
     <div className="mx-auto max-w-7xl space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div><h1 className="text-2xl font-semibold text-forest-900">Invoices</h1><p className="text-sm text-slate-500">Prepare and save GST invoice drafts. Issuing and numbering are not available in this phase.</p></div>
+        <div><h1 className="text-2xl font-semibold text-forest-900">Invoices</h1><p className="text-sm text-slate-500">Create drafts, approve and issue GST invoices, and download stored invoice PDFs.</p></div>
         {canCreate && <Button onClick={() => setNewDraft(true)} disabled={!ready}><Plus className="h-4 w-4" aria-hidden /> New draft</Button>}
       </div>
       <InvoiceReadinessBanner />
       <div className="flex justify-end">
         <select aria-label="Filter invoices by status" value={invoiceStatus} onChange={(event) => setInvoiceStatus(event.target.value)} className="rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm">
-          <option value="">Draft and issued</option><option value="draft">Draft</option><option value="issued">Issued</option>
+          <option value="">All statuses</option><option value="draft">Draft</option><option value="approved">Approved</option><option value="issued">Issued</option><option value="cancelled">Cancelled</option>
         </select>
       </div>
+      {workflow.isError && <p role="alert" className="text-sm text-red-700">{(workflow.error as Error).message}</p>}
       <Card className="overflow-hidden">
         {list.isLoading && <LoadingState />}
         {list.isError && <ErrorState message={(list.error as Error).message} onRetry={() => list.refetch()} />}
         {list.isSuccess && list.data.items.length === 0 && <EmptyState title="No invoices found" hint="Create a draft invoice when company readiness is complete." />}
         {list.isSuccess && list.data.items.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] text-left text-sm">
+            <table className="w-full min-w-[1000px] text-left text-sm">
               <thead className="bg-ivory-100 text-xs uppercase tracking-wide text-slate-500"><tr>{["Invoice", "Customer", "Type", "Date", "Status", "Total"].map((label) => <th key={label} scope="col" className="px-4 py-3 font-medium">{label}</th>)}<th className="px-4 py-3 text-right">Actions</th></tr></thead>
               <tbody className="divide-y divide-ivory-200">
                 {list.data.items.map((invoice) => (
                   <tr key={invoice.id} className="hover:bg-ivory-50">
-                    <td className="px-4 py-3">{invoice.invoice_number ?? "Draft (not numbered)"}</td>
+                    <td className="px-4 py-3"><button className="text-forest-800 underline" onClick={() => setViewId(invoice.id)}>{invoice.invoice_number ?? "Draft (not numbered)"}</button></td>
                     <td className="px-4 py-3 font-medium">{invoice.customer_name}</td>
                     <td className="px-4 py-3">{invoice.doc_type.replace(/_/g, " ")}</td>
                     <td className="px-4 py-3">{formatDate(invoice.invoice_date)}</td>
-                    <td className="px-4 py-3 capitalize">{invoice.status}</td>
+                    <td className="px-4 py-3"><Badge>{invoice.status}</Badge></td>
                     <td className="px-4 py-3 tabular-nums">{formatINR(invoice.grand_total)}</td>
                     <td className="px-4 py-3">
-                      {invoice.status === "draft" && canUpdate && (
-                        <div className="flex justify-end gap-1">
-                          <Button variant="secondary" disabled={!ready} onClick={() => setEditId(invoice.id)}>Edit draft</Button>
-                          <Button variant="ghost" className="px-2 text-red-700" disabled={!ready} onClick={() => setDeleteTarget(invoice)} aria-label={`Delete draft for ${invoice.customer_name}`}><Trash2 className="h-4 w-4" aria-hidden /></Button>
-                        </div>
-                      )}
+                      <div className="flex justify-end gap-1">
+                        {invoice.status === "draft" && canUpdate && <Button variant="secondary" disabled={!ready || workflow.isPending} onClick={() => setEditId(invoice.id)}>Edit</Button>}
+                        {invoice.status === "draft" && canApprove && invoice.doc_type !== "proforma" && <Button variant="secondary" disabled={!ready || workflow.isPending} onClick={() => setWorkflowTarget({ id: invoice.id, customer_name: invoice.customer_name, action: "approve" })}>Approve</Button>}
+                        {invoice.status === "approved" && canIssue && <Button disabled={!ready || workflow.isPending} onClick={() => setWorkflowTarget({ id: invoice.id, customer_name: invoice.customer_name, action: "issue" })}>Issue</Button>}
+                        {invoice.status === "draft" && canCreate && invoice.doc_type === "proforma" && <Button variant="secondary" disabled={workflow.isPending} onClick={() => setWorkflowTarget({ id: invoice.id, customer_name: invoice.customer_name, action: "convert" })}>Convert</Button>}
+                        {(invoice.status === "issued" || invoice.status === "cancelled") && <Button variant="secondary" disabled={downloadingId !== null} onClick={() => downloadPdf(invoice.id)}>PDF</Button>}
+                        {invoice.status === "issued" && canCancel && <Button variant="danger" disabled={workflow.isPending} onClick={() => setCancelTarget(invoice.id)}>Cancel</Button>}
+                        {invoice.status === "draft" && canUpdate && <Button variant="ghost" className="px-2 text-red-700" disabled={workflow.isPending} onClick={() => setDeleteTarget(invoice)} aria-label={`Delete draft for ${invoice.customer_name}`}><Trash2 className="h-4 w-4" aria-hidden /></Button>}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -671,13 +851,46 @@ export function InvoicesPage() {
         )}
       </Card>
       <ConfirmDialog
+        open={workflowTarget !== null}
+        title={activeWorkflow?.title ?? ""}
+        message={activeWorkflow?.message ?? ""}
+        confirmLabel={activeWorkflow?.label}
+        danger={workflowTarget?.action === "issue"}
+        onCancel={() => { if (!workflow.isPending) setWorkflowTarget(null); }}
+        onConfirm={async () => {
+          if (workflowTarget) {
+            try { await workflow.mutateAsync({ id: workflowTarget.id, action: workflowTarget.action }); } catch { /* Error is shown by the mutation toast. */ }
+          }
+        }}
+      />
+      <Modal open={cancelTarget !== null} onClose={() => { if (!workflow.isPending) setCancelTarget(null); }} title="Cancel invoice">
+        <form className="space-y-4 p-6" onSubmit={(event) => {
+          event.preventDefault();
+          if (cancelTarget !== null) workflow.mutate({ id: cancelTarget, action: "cancel", reason: cancelReason.trim() });
+        }}>
+          <h2 className="text-lg font-semibold">Cancel issued invoice</h2>
+          <p className="text-sm text-slate-600">This preserves the invoice number, reverses accounting entries, restores stock and serials, and cannot be undone.</p>
+          <label className="block text-sm font-medium">Cancellation reason
+            <textarea required minLength={10} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} rows={4} className="mt-1 w-full rounded-lg border border-ivory-300 p-3" />
+          </label>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" disabled={workflow.isPending} onClick={() => setCancelTarget(null)}>Keep invoice</Button>
+            <Button type="submit" variant="danger" loading={workflow.isPending} disabled={cancelReason.trim().length < 10}>Cancel invoice</Button>
+          </div>
+        </form>
+      </Modal>
+      <ConfirmDialog
         open={deleteTarget !== null}
         title="Delete invoice draft"
         message={`Delete the draft for ${deleteTarget?.customer_name ?? "this customer"}? This cannot be undone.`}
         confirmLabel="Delete draft"
         danger
         onCancel={() => { if (!remove.isPending) setDeleteTarget(null); }}
-        onConfirm={async () => { if (deleteTarget) await remove.mutateAsync(deleteTarget.id); }}
+        onConfirm={async () => {
+          if (deleteTarget) {
+            try { await remove.mutateAsync(deleteTarget.id); } catch { /* Error is shown by the mutation toast. */ }
+          }
+        }}
       />
     </div>
   );

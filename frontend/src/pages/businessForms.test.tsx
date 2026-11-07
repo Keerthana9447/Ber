@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { customerFormSchema } from "./CustomersPage";
-import { invoiceDraftRequestBody, invoiceDraftSchema, PreviewTotals, type Preview } from "./InvoicesPage";
+import { invoiceDraftRequestBody, invoiceDraftSchema, InvoiceReadOnlyView, PreviewTotals, type Preview } from "./InvoicesPage";
 
 describe("customer form validation", () => {
   it("accepts valid details and rejects GSTINs for a different state", () => {
@@ -42,6 +42,8 @@ describe("invoice editor validation and preview display", () => {
     lines: [{
       product_id: "2",
       serial_id: "",
+      warehouse_id: "3",
+      is_service: false,
       description: "Product",
       hsn_sac: "1234",
       unit: "PCS",
@@ -62,6 +64,10 @@ describe("invoice editor validation and preview display", () => {
       lines: [{ ...draft.lines[0], quantity: "1.0001" }],
     };
     expect(invoiceDraftSchema.safeParse(invalid).success).toBe(false);
+    expect(invoiceDraftSchema.safeParse({
+      ...draft,
+      lines: [{ ...draft.lines[0], warehouse_id: "" }],
+    }).success).toBe(false);
   });
 
   it("preserves invoice header fields in the draft API request", () => {
@@ -78,7 +84,9 @@ describe("invoice editor validation and preview display", () => {
       due_date: "2026-12-07",
       payment_terms: "Net 30",
       notes: "Draft note",
+      lines: [{ warehouse_id: 3 }],
     });
+    expect(invoiceDraftRequestBody(values).lines[0]).not.toHaveProperty("is_service");
   });
 
   it("renders server-provided totals without deriving tax values", () => {
@@ -109,5 +117,40 @@ describe("invoice editor validation and preview display", () => {
     expect(markup).toContain("Server-computed amount in words");
     expect(markup).toContain("118.00");
     expect(markup).toContain("17.00");
+  });
+
+  it("renders an issued invoice as read-only with its assigned number and status", () => {
+    const markup = renderToStaticMarkup(
+      <InvoiceReadOnlyView
+        invoice={{
+          id: 4,
+          invoice_number: "INVT/26-27/00001",
+          customer_id: 1,
+          place_of_supply_code: "29",
+          doc_type: "tax_invoice",
+          reverse_charge: false,
+          invoice_date: "2026-11-07",
+          due_date: null,
+          payment_terms: null,
+          notes: null,
+          status: "issued",
+          taxable_total: "100.00",
+          cgst_total: "0.00",
+          sgst_total: "0.00",
+          igst_total: "18.00",
+          cess_total: "0.00",
+          round_off: "0.00",
+          grand_total: "118.00",
+          lines: [],
+        }}
+        onBack={() => undefined}
+        onDownload={() => undefined}
+        downloading={false}
+        onCancel={() => undefined}
+      />,
+    );
+    expect(markup).toContain("INVT/26-27/00001");
+    expect(markup).toContain("issued");
+    expect(markup).not.toContain("Edit invoice");
   });
 });

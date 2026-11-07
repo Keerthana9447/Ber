@@ -39,6 +39,7 @@ CREATE TABLE company_settings (
   bank_name TEXT, bank_account_no TEXT, bank_ifsc TEXT, upi_id TEXT,
   logo_path TEXT, invoice_prefix TEXT NOT NULL DEFAULT 'INV' CHECK (invoice_prefix ~ '^[A-Za-z0-9/-]{1,6}$'),
   fy_start_month SMALLINT NOT NULL DEFAULT 4 CHECK (fy_start_month BETWEEN 1 AND 12),
+  allow_invoice_issue_without_approval BOOLEAN NOT NULL DEFAULT FALSE,
   terms_and_conditions TEXT, authorized_signatory TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 
@@ -262,11 +263,16 @@ CREATE TABLE invoices (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   doc_type TEXT NOT NULL DEFAULT 'tax_invoice' CHECK (doc_type IN ('tax_invoice','bill_of_supply','proforma')),
   invoice_number TEXT,                              -- assigned only at issue
+  issue_idempotency_key TEXT,
   fy_start_year INT, customer_id BIGINT NOT NULL REFERENCES customers(id),
   sales_order_id BIGINT REFERENCES sales_orders(id), branch_id BIGINT REFERENCES branches(id),
   salesperson_id BIGINT REFERENCES users(id),
   invoice_date DATE NOT NULL, due_date DATE,
   seller_gstin TEXT, customer_gstin TEXT, billing_address TEXT, shipping_address TEXT,  -- snapshots
+  customer_name TEXT, seller_legal_name TEXT, seller_trade_name TEXT, seller_pan TEXT,
+  seller_address TEXT, seller_logo_path TEXT, seller_bank_name TEXT, seller_bank_account_no TEXT,
+  seller_bank_ifsc TEXT, seller_upi_id TEXT, seller_terms_and_conditions TEXT,
+  seller_authorized_signatory TEXT, hsn_summary JSONB,
   place_of_supply_code CHAR(2) NOT NULL REFERENCES states(code),
   is_inter_state BOOLEAN NOT NULL, reverse_charge BOOLEAN NOT NULL DEFAULT FALSE,
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','approved','issued','cancelled')),
@@ -283,6 +289,8 @@ CREATE TABLE invoices (
   CHECK (is_inter_state OR igst_total = 0),
   CHECK (grand_total = taxable_total + cgst_total + sgst_total + igst_total + cess_total + round_off));
 CREATE UNIQUE INDEX invoices_number_uq ON invoices (invoice_number) WHERE invoice_number IS NOT NULL;
+CREATE UNIQUE INDEX invoices_issue_idempotency_uq ON invoices (issue_idempotency_key)
+  WHERE issue_idempotency_key IS NOT NULL;
 CREATE INDEX invoices_cust_ix ON invoices (customer_id, invoice_date DESC);
 CREATE INDEX invoices_date_ix ON invoices (invoice_date);
 CREATE INDEX invoices_status_ix ON invoices (status);
@@ -290,6 +298,7 @@ CREATE TABLE invoice_items (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   invoice_id BIGINT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
   product_id BIGINT REFERENCES products(id), serial_id BIGINT REFERENCES product_serials(id),
+  warehouse_id BIGINT REFERENCES warehouses(id),
   description TEXT NOT NULL, hsn_sac TEXT NOT NULL, unit TEXT,
   quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0), unit_price NUMERIC(14,4) NOT NULL CHECK (unit_price >= 0),
   discount NUMERIC(14,2) NOT NULL DEFAULT 0, taxable_value NUMERIC(14,2) NOT NULL,
@@ -298,9 +307,8 @@ CREATE TABLE invoice_items (
   igst NUMERIC(14,2) NOT NULL DEFAULT 0, cess NUMERIC(14,2) NOT NULL DEFAULT 0,
   unit_cost NUMERIC(14,4));                         -- cost snapshot for COGS
 CREATE INDEX invoice_items_inv_ix ON invoice_items (invoice_id);
-CREATE UNIQUE INDEX invoice_items_serial_uq ON invoice_items (serial_id) WHERE serial_id IS NOT NULL;
--- NOTE: invoice_items_serial_uq stops one serial being sold twice; handle returns by
--- cancelling the invoice via workflow, or relax to a partial index on live invoices.
+CREATE UNIQUE INDEX invoice_items_inv_serial_uq ON invoice_items (invoice_id, serial_id)
+  WHERE serial_id IS NOT NULL;
 
 CREATE TABLE credit_notes (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -443,18 +451,23 @@ BEGIN
     IF OLD.status <> 'draft' THEN RAISE EXCEPTION 'only draft invoices can be deleted'; END IF;
     RETURN OLD;
   END IF;
-  IF OLD.status IN ('issued','cancelled') THEN
-    IF (NEW.invoice_number, NEW.customer_id, NEW.invoice_date, NEW.taxable_total, NEW.cgst_total,
-        NEW.sgst_total, NEW.igst_total, NEW.cess_total, NEW.round_off, NEW.grand_total)
-       IS DISTINCT FROM
-       (OLD.invoice_number, OLD.customer_id, OLD.invoice_date, OLD.taxable_total, OLD.cgst_total,
-        OLD.sgst_total, OLD.igst_total, OLD.cess_total, OLD.round_off, OLD.grand_total) THEN
-      RAISE EXCEPTION 'issued invoice % cannot be modified; cancel and re-issue or use a credit note', OLD.invoice_number;
+  IF OLD.status = 'cancelled' THEN
+    IF NEW IS DISTINCT FROM OLD THEN RAISE EXCEPTION 'cancelled invoices cannot be modified'; END IF;
+  ELSIF OLD.status = 'issued' THEN
+    IF NEW.status NOT IN ('issued','cancelled') THEN RAISE EXCEPTION 'invalid status transition'; END IF;
+    IF NEW.status = 'issued' THEN
+      IF (to_jsonb(NEW) - ARRAY['status']) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['status']) THEN
+        RAISE EXCEPTION 'issued invoice % cannot be modified; cancel and re-issue or use a credit note', OLD.invoice_number;
+      END IF;
+    ELSE
+      IF (to_jsonb(NEW) - ARRAY['status','cancelled_at','cancel_reason','updated_at']) IS DISTINCT FROM
+         (to_jsonb(OLD) - ARRAY['status','cancelled_at','cancel_reason','updated_at']) THEN
+        RAISE EXCEPTION 'issued invoice % cannot be modified during cancellation', OLD.invoice_number;
+      END IF;
+      IF NEW.cancelled_at IS NULL OR NEW.cancel_reason IS NULL OR length(btrim(NEW.cancel_reason)) < 10 THEN
+        RAISE EXCEPTION 'cancellation timestamp and reason are required';
+      END IF;
     END IF;
-    IF OLD.status = 'cancelled' AND NEW.status <> 'cancelled' THEN
-      RAISE EXCEPTION 'cancelled invoices cannot be reopened'; END IF;
-    IF OLD.status = 'issued' AND NEW.status NOT IN ('issued','cancelled') THEN
-      RAISE EXCEPTION 'invalid status transition'; END IF;
   END IF;
   RETURN NEW;
 END $$;

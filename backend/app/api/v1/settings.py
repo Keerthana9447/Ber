@@ -35,6 +35,7 @@ class SettingsWrite(BaseModel):
     logo_path: str | None = Field(default=None, max_length=1000)
     invoice_prefix: str = Field(min_length=1, max_length=16)
     fy_start_month: int = Field(ge=1, le=12)
+    allow_invoice_issue_without_approval: bool = False
     terms_and_conditions: str | None = Field(default=None, max_length=5000)
     authorized_signatory: str | None = Field(default=None, max_length=255)
 
@@ -95,7 +96,13 @@ class SettingsWrite(BaseModel):
         ):
             raise ValueError("GSTIN is invalid or its state prefix does not match state_code")
         try:
-            format_invoice_number(self.invoice_prefix, date(2026, 4, 1), 1, fy_start_month=self.fy_start_month)
+            for marker in ("T", "B"):
+                format_invoice_number(
+                    self.invoice_prefix + marker,
+                    date(2026, 4, 1),
+                    1,
+                    fy_start_month=self.fy_start_month,
+                )
         except ValueError as error:
             raise ValueError(f"invoice_prefix cannot produce an invoice number within 16 characters: {error}") from None
         return self
@@ -120,6 +127,7 @@ class SettingsResponse(BaseModel):
     logo_path: str | None
     invoice_prefix: str
     fy_start_month: int
+    allow_invoice_issue_without_approval: bool
     terms_and_conditions: str | None
     authorized_signatory: str | None
     updated_at: datetime | None
@@ -144,6 +152,7 @@ def _values(settings: CompanySettings | None) -> dict[str, object]:
             "logo_path": None,
             "invoice_prefix": "",
             "fy_start_month": 4,
+            "allow_invoice_issue_without_approval": False,
             "terms_and_conditions": None,
             "authorized_signatory": None,
             "updated_at": None,

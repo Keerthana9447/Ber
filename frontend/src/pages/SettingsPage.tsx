@@ -24,6 +24,7 @@ type Settings = {
   logo_path: string | null;
   invoice_prefix: string;
   fy_start_month: number;
+  allow_invoice_issue_without_approval: boolean;
   terms_and_conditions: string | null;
   authorized_signatory: string | null;
   updated_at: string | null;
@@ -46,6 +47,7 @@ export const settingsFormSchema = z.object({
   logo_path: z.string().max(1000),
   invoice_prefix: z.string().trim().regex(/^[A-Za-z0-9/-]{1,4}$/, "Use 1–4 letters, digits, hyphens or slashes to keep invoice numbers within 16 characters"),
   fy_start_month: z.string().regex(/^(?:[1-9]|1[0-2])$/, "Select a month from 1 to 12"),
+  allow_invoice_issue_without_approval: z.boolean(),
   terms_and_conditions: z.string().max(5000),
   authorized_signatory: z.string().max(255),
 }).superRefine((values, context) => {
@@ -75,6 +77,7 @@ const blankSettings: SettingsFormValues = {
   logo_path: "",
   invoice_prefix: "",
   fy_start_month: "4",
+  allow_invoice_issue_without_approval: false,
   terms_and_conditions: "",
   authorized_signatory: "",
 };
@@ -96,6 +99,7 @@ function toForm(settings: Settings): SettingsFormValues {
     logo_path: settings.logo_path ?? "",
     invoice_prefix: settings.invoice_prefix,
     fy_start_month: String(settings.fy_start_month),
+    allow_invoice_issue_without_approval: settings.allow_invoice_issue_without_approval,
     terms_and_conditions: settings.terms_and_conditions ?? "",
     authorized_signatory: settings.authorized_signatory ?? "",
   };
@@ -194,6 +198,10 @@ export function SettingsPage() {
                   <select {...form.register("fy_start_month")} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm">
                     {Array.from({ length: 12 }, (_, i) => <option key={i + 1} value={i + 1}>{new Date(2026, i, 1).toLocaleString("en", { month: "long" })}</option>)}
                   </select>
+                </label>
+                <label className="flex items-start gap-2 text-sm text-slate-700 sm:col-span-2">
+                  <input type="checkbox" {...form.register("allow_invoice_issue_without_approval")} className="mt-1" />
+                  <span>Allow eligible users with both approval and issue permissions to issue drafts without a separate approval (default off).</span>
                 </label>
                 <Field label="Authorized signatory" {...form.register("authorized_signatory")} error={fields.authorized_signatory?.message} />
                 <label className="text-sm font-medium text-slate-700 sm:col-span-2">

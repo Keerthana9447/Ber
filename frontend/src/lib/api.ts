@@ -66,6 +66,20 @@ export function messageFromDetail(detail: unknown, fallback: string): string {
       )
       .join("; ");
   }
+  if (detail && typeof detail === "object") {
+    const record = detail as { message?: unknown; shortages?: unknown };
+    if (typeof record.message === "string") {
+      const shortages = Array.isArray(record.shortages)
+        ? record.shortages.map((item) => {
+            if (!item || typeof item !== "object") return String(item);
+            const shortage = item as Record<string, unknown>;
+            return `${String(shortage.product_name ?? shortage.product_id)}: required ${String(shortage.required)}, available ${String(shortage.available)}`;
+          })
+        : [];
+      return [record.message, ...shortages].join("; ");
+    }
+    return JSON.stringify(detail);
+  }
   return fallback;
 }
 
@@ -150,4 +164,33 @@ export async function api<T = unknown>(path: string, options: Options = {}, allo
     throw new ApiError(res.status, messageFromDetail(detail, `Request failed (${res.status})`), detail);
   }
   return payload as T;
+}
+
+export async function apiBlob(path: string, allowRetry = true): Promise<Blob> {
+  const headers: Record<string, string> = { Accept: "application/pdf" };
+  if (accessToken) headers.Authorization = ["Bearer", accessToken].join(" ");
+  let response: Response;
+  try {
+    response = await fetch(buildUrl(path), { headers });
+  } catch {
+    throw new ApiError(0, "Cannot reach the server. Check that the backend is running.");
+  }
+  if (response.status === 401) {
+    if (allowRetry && await refreshSession()) return apiBlob(path, false);
+    onUnauthorized?.();
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let payload: unknown;
+    try {
+      payload = text ? JSON.parse(text) : undefined;
+    } catch {
+      payload = text;
+    }
+    const detail = payload && typeof payload === "object" && "detail" in payload
+      ? (payload as { detail: unknown }).detail
+      : payload;
+    throw new ApiError(response.status, messageFromDetail(detail, `Request failed (${response.status})`), detail);
+  }
+  return response.blob();
 }

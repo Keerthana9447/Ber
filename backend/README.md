@@ -19,22 +19,28 @@ Set-Location backend
 ..\.venv\Scripts\python.exe -m uvicorn app.main:create_app --factory
 ```
 
-The API is versioned under `/api/v1`; `/api/v1/health` is an application-liveness endpoint and does not check database connectivity. Auth, customer CRUD, and the dashboard endpoints are available; other business module APIs are still being implemented. The app does not create database tables on startup.
+The API is versioned under `/api/v1`; `/api/v1/health` is an application-liveness endpoint and does not check database connectivity. Implemented workflows include authentication, dashboard, settings, customers, products/inventory, and invoice drafts through issue/cancel/PDF. Payments, quotations/orders, purchases, credit notes, and production operations are not implemented. The app does not create database tables on startup.
 New PostgreSQL connections use a five-second connect timeout. SQLAlchemy operational failures return HTTP 503 with a `Retry-After: 5` header; this does not replace database availability monitoring.
 
-Run database-independent and existing tests from `backend`:
+Run the backend tests from `backend`. Database integration tests require `BEREV_TEST_DATABASE_URL` to point to the isolated PostgreSQL test database:
 
 ```powershell
 ..\.venv\Scripts\python.exe -m unittest discover -s tests -t . -v
 ```
 
-After a real PostgreSQL environment is available and the schema baseline has been validated, the interactive first-admin command is:
+The integrity check reports PASS/FAIL for invoice numbering, stock ledger, and accounting invariants. Run it against a configured database:
+
+```powershell
+..\.venv\Scripts\python.exe -m app.cli verify-integrity
+```
+
+The interactive first-admin command is:
 
 ```powershell
 ..\.venv\Scripts\python.exe -m app.cli create-admin
 ```
 
-It prompts for email, name, and a password (twice); no default account or password is supplied. The reference seed entry point is `python -m app.seed`; it has not been run.
+It prompts for email, name, and a password (twice); no default account or password is supplied. The reference seed entry point is `python -m app.seed`.
 
 `scripts/generate_models.py` generates the SQLAlchemy 2.x declarative mappings from `db/schema.sql`. Check that generated source is current with:
 
@@ -42,13 +48,13 @@ It prompts for email, name, and a password (twice); no default account or passwo
 ..\.venv\Scripts\python.exe scripts\generate_models.py --check
 ```
 
-Alembic is configured in `alembic.ini`. In the current local setup, the baseline migration and reference seed have been run against `berev_dev` and `berev_test` on PostgreSQL 16.15. The first-admin command has not been run.
+Alembic is configured in `alembic.ini`. The baseline and invoice-workflow migrations and reference seed have been run against local PostgreSQL 16.15 databases. The first-admin command has not been run.
 
 ## Database verification status
 
-Verified locally on PostgreSQL 16.15: the Alembic baseline applied to both local databases, the seed ran idempotently, and live introspection found all 49 mapped tables and their columns. A database-backed smoke test exercised login, profile, refresh rotation, logout, and refresh-token revocation.
+Verified locally on PostgreSQL 16.15: the Alembic baseline and invoice workflow migrations applied, the seed ran idempotently, and live introspection found all 49 mapped tables and their columns. Database-backed auth flows and Phase 2b/3a API, concurrency, rollback, PDF, and integrity tests ran against the isolated test database.
 
-**Still unverified:** PostgreSQL-specific numbering concurrency, production load/failover behavior, backups/restores, deployment configuration, and GST legal compliance. The existing numbering concurrency and rollback tests use SQLite and do not verify PostgreSQL behavior. Consult a qualified Indian tax professional about GST assumptions and calculations.
+**Still unverified:** production load/failover behavior, backups/restores, deployment configuration, and GST legal compliance. Consult a qualified Indian tax professional about GST assumptions, invoice numbering, and date rules before live use.
 
 ## Existing domain modules
 

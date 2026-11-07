@@ -524,6 +524,7 @@ def list_available_serials(
             "vin": serial.vin,
             "motor_no": serial.motor_no,
             "battery_serial": serial.battery_serial,
+            "warehouse_id": serial.warehouse_id,
             "status": serial.status,
         }
         for serial in serials

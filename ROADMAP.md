@@ -18,7 +18,7 @@
 
 **Exit criteria:** schema executes cleanly on PostgreSQL 16; the verification result is recorded; Alembic can inspect/manage the baseline; application configuration and auth foundation are tested against the test database.
 
-**Status:** The local PostgreSQL schema, baseline migration, reference seed, model/catalog match, and core auth flow have been verified. PostgreSQL-specific numbering concurrency, first-admin creation, production operations, and deployment validation remain **UNVERIFIED**.
+**Status:** The local PostgreSQL schema, baseline migration, reference seed, model/catalog match, and core auth flow have been verified. Phase 3a invoice lifecycle and numbering concurrency have also been exercised against the isolated PostgreSQL test database. First-admin creation, production operations, and deployment validation remain **UNVERIFIED**.
 
 ## Phase 2 — Dashboard, parties, products, and inventory
 
@@ -26,7 +26,7 @@
 - Enforce branch/dealer scope and prevent negative stock unless an authorized configuration explicitly allows it.
 - Test inventory operations and relevant permissions against `berev_test`.
 
-**Status:** Dashboard, customers, products, and inventory foundations are implemented. Company settings/readiness and customer workflows have PostgreSQL API coverage. Invoice drafts and their tax previews are implemented without issuance, invoice numbering, payment, PDF, or invoice-driven stock deduction.
+**Status:** Dashboard, customers, products, inventory foundations, company settings/readiness, and customer workflows are implemented. Invoice drafts and server-computed previews are implemented. Phase 3a adds approval, transactional issue/cancel, numbering, stock/accounting posting and reversal, and stored-value PDF output. Payments, quotations/orders, purchases, and production operations remain future work.
 
 ## Phase 3 — Sales, purchasing, GST billing, and invoices
 
@@ -34,7 +34,7 @@
 - Make invoice numbering, invoice posting, and stock updates transactional and safe under concurrent requests.
 - Test intra-state/inter-state tax, issuance, cancellation, and inventory effects.
 
-**Status:** Draft-only invoice CRUD and server-computed previews are implemented. Issuing, numbering, posting, PDFs, payments, and invoice stock effects remain future work.
+**Status:** Draft CRUD and server-computed previews are implemented. The Phase 3a workflow supports draft -> approved -> issued -> cancelled for tax invoices and bills of supply; proformas remain draft-only and can be copied into a new tax-invoice draft. PostgreSQL lifecycle, concurrency, rollback, integrity, and PDF tests are included. Payments, credit notes, quotations/orders, purchases, and production readiness remain future work.
 
 ## Phase 4 — Payments, expenses, dealer management, and accounting
 
