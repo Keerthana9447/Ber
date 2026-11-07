@@ -9,6 +9,8 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { ModuleListPage } from "./pages/ModuleListPage";
 import { ProductsPage } from "./pages/ProductsPage";
 import { InventoryPage } from "./pages/InventoryPage";
+import { CustomersPage } from "./pages/CustomersPage";
+import { InvoicesPage } from "./pages/InvoicesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { ForbiddenPage, NotFoundPage } from "./pages/Misc";
@@ -46,7 +48,11 @@ export default function App() {
               path={m.path.slice(1)}
               element={
                 <RequirePermission permission={m.permission}>
-                  {m.key === "products" ? (
+                  {m.key === "customers" ? (
+                    <CustomersPage />
+                  ) : m.key === "invoices" ? (
+                    <InvoicesPage />
+                  ) : m.key === "products" ? (
                     <ProductsPage />
                   ) : m.key === "inventory" ? (
                     <InventoryPage />

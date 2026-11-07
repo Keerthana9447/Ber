@@ -15,7 +15,9 @@ export default defineConfig(({ mode }) => {
         output: {
           manualChunks(id) {
             if (id.includes("/node_modules/victory-vendor/")) return "chart-vendor";
-            if (id.includes("/node_modules/recharts/")) return "charts";
+            if (id.includes("/node_modules/recharts/es6/chart/")) return "recharts-chart";
+            if (id.includes("/node_modules/recharts/es6/polar/")) return "recharts-polar";
+            if (id.includes("/node_modules/recharts/es6/")) return "recharts-core";
           },
         },
       },

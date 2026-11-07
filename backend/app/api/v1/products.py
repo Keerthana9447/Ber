@@ -25,6 +25,7 @@ from app.models import (
     Unit,
     User,
     Warehouse,
+    ProductSerial,
 )
 
 router = APIRouter(tags=["products", "inventory"])
@@ -486,6 +487,47 @@ def get_product(
     if product is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
     return ProductResponse.model_validate(product)
+
+
+@router.get("/products/{product_id}/serials")
+def list_available_serials(
+    product_id: int,
+    user: Annotated[User, Depends(require_permissions("products:read"))],
+    session: Annotated[Session, Depends(get_db)],
+    q: str = Query(default="", max_length=200),
+) -> list[dict[str, object]]:
+    del user
+    product = _active_product(session, product_id)
+    if product is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    if not product.is_serialized:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Product is not serialized")
+    filters = [ProductSerial.product_id == product_id, ProductSerial.status == "available"]
+    search = q.strip()
+    if search:
+        pattern = f"%{search}%"
+        filters.append(
+            or_(
+                ProductSerial.chassis_no.ilike(pattern),
+                ProductSerial.vin.ilike(pattern),
+                ProductSerial.motor_no.ilike(pattern),
+                ProductSerial.battery_serial.ilike(pattern),
+            )
+        )
+    serials = session.scalars(
+        select(ProductSerial).where(*filters).order_by(ProductSerial.id).limit(100)
+    ).all()
+    return [
+        {
+            "id": serial.id,
+            "chassis_no": serial.chassis_no,
+            "vin": serial.vin,
+            "motor_no": serial.motor_no,
+            "battery_serial": serial.battery_serial,
+            "status": serial.status,
+        }
+        for serial in serials
+    ]
 
 
 @router.put("/products/{product_id}", response_model=ProductResponse)

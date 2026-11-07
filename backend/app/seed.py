@@ -72,6 +72,8 @@ PERMISSION_DESCRIPTIONS = {
     "reports:export": "Export reports",
     "settings:read": "View company settings",
     "settings:manage": "Manage company settings",
+    "settings:update": "Update company settings",
+    "sales:update": "Update draft sales documents",
 }
 
 ALL_PERMISSIONS = tuple(PERMISSION_DESCRIPTIONS)
@@ -113,7 +115,7 @@ ROLE_PERMISSIONS = {
     ),
     "Dealer / Distributor": (
         "auth:self:read", "auth:self:logout", "products:read", "sales:read",
-        "sales:create", "payments:read",
+        "payments:read",
     ),
 }
 
@@ -160,6 +162,10 @@ def seed_reference_data(session: Session) -> None:
         if role is None:
             role = Role(name=name)
             session.add(role)
+        if name == "Dealer / Distributor":
+            role.permissions[:] = [
+                permission for permission in role.permissions if permission.code != "sales:create"
+            ]
         assigned = {permission.code for permission in role.permissions}
         role.permissions.extend(
             permission_rows[code]

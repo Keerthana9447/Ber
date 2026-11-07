@@ -1,6 +1,6 @@
 # Known Gaps
 
-This list reflects the implementation after the database-independent Phase 1 work. **UNVERIFIED** means no real PostgreSQL run has confirmed the behavior.
+This list reflects the implementation after Phase 2b. **UNVERIFIED** means no real PostgreSQL run has confirmed the behavior.
 
 ## Database verification
 
@@ -8,6 +8,7 @@ This list reflects the implementation after the database-independent Phase 1 wor
 - **VERIFIED locally — SQLAlchemy models vs schema:** live catalog introspection found all 49 mapped tables and their mapped columns.
 - **VERIFIED locally — seed script:** the reference seed ran twice without duplicate rows.
 - **VERIFIED locally — auth smoke test:** login, profile, refresh rotation, logout, and refresh-token revocation worked against PostgreSQL.
+- **VERIFIED locally — Phase 2b API integration:** settings validation/readiness/audit redaction, customer validation/duplicate GSTIN/filtering/soft-delete history, draft CRUD, invoice preview parity (intra-state, inter-state, bill of supply, discount, cess, and round-off), active-rate and serial validation, authorization, and invoice guard triggers passed against the isolated PostgreSQL test database.
 - **UNVERIFIED — PostgreSQL concurrency:** current numbering concurrency tests use SQLite; no PostgreSQL concurrency tests have run.
 - **UNVERIFIED — production operations:** load/failover behavior, backups/restores, and deployment configuration have not been exercised.
 
@@ -22,8 +23,10 @@ Do not treat database operations as working until verified on a real PostgreSQL 
 
 ## Remaining product scope
 
-- The React/TypeScript frontend provides sign-in, the application shell, and data-list screens, but most screens are not backed by API endpoints. PDF/print invoice output, deployment configuration, and an operational backup process are also absent.
-- Customers, suppliers, dealers, products, inventory, sales, purchases, invoicing, payments, expenses, notifications, settings, and reports are not yet exposed as complete database-backed workflows.
-- Password reset/change workflows, account administration endpoints, granular audit coverage, and broader API authorization tests remain to be implemented.
+- The frontend now has editable company settings and customer workflows, a draft invoice editor using server preview totals, and a lazy-loaded dashboard chart area. Browser-based manual acceptance has not been performed.
+- Issued invoice workflows, invoice numbering, PDF/print output, quotations, purchases, payments, expenses, notifications, and complete financial reports remain unimplemented. Invoice drafts do not reserve serials or update stock.
+- Suppliers and dealer workflows remain incomplete. Product/inventory functionality has automated API coverage but is not a full end-to-end sales-to-stock workflow.
+- Password reset/change workflows, account administration endpoints, granular audit coverage, and broader API authorization/data-isolation testing remain to be implemented.
+- PostgreSQL numbering/concurrency tests, operational backup/restore, production load/failover, deployment, and first-admin operational procedures remain unverified.
 - GST assumptions are documented in `backend/README.md`; this is not a legal-compliance claim and requires review by a qualified Indian tax professional.
 - BEREV's official GSTIN, PAN, bank information, and other registrations must be supplied through configuration rather than invented.

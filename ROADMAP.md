@@ -5,7 +5,7 @@
 - The backend contains stdlib-only domain modules for GST calculations, amount-in-words, invoice numbering, accounting, and payment allocation.
 - Existing unit tests cover these modules; the invoice-number concurrency tests use SQLite.
 - `backend/db/schema.sql` defines 49 tables and integrity triggers. Its Alembic baseline has been applied to fresh local PostgreSQL 16.15 development and test databases; all mapped tables and columns were confirmed by live catalog introspection.
-- A FastAPI app, generated SQLAlchemy mappings, Alembic baseline, authentication foundation, and React/TypeScript frontend are present. Most business modules are not yet implemented as complete database-backed workflows, and the PostgreSQL schema and migrations remain unverified.
+- A FastAPI app, generated SQLAlchemy mappings, Alembic baseline, authentication foundation, and React/TypeScript frontend are present. The PostgreSQL schema and baseline are verified locally; production operations remain unverified.
 
 ## Phase 1 — Architecture, database, backend foundation, and authentication
 
@@ -26,11 +26,15 @@
 - Enforce branch/dealer scope and prevent negative stock unless an authorized configuration explicitly allows it.
 - Test inventory operations and relevant permissions against `berev_test`.
 
+**Status:** Dashboard, customers, products, and inventory foundations are implemented. Company settings/readiness and customer workflows have PostgreSQL API coverage. Invoice drafts and their tax previews are implemented without issuance, invoice numbering, payment, PDF, or invoice-driven stock deduction.
+
 ## Phase 3 — Sales, purchasing, GST billing, and invoices
 
 - Implement quotations, sales orders, delivery challans, purchases, goods receipts, invoice lifecycle, configurable tax classification, and professional invoice output.
 - Make invoice numbering, invoice posting, and stock updates transactional and safe under concurrent requests.
 - Test intra-state/inter-state tax, issuance, cancellation, and inventory effects.
+
+**Status:** Draft-only invoice CRUD and server-computed previews are implemented. Issuing, numbering, posting, PDFs, payments, and invoice stock effects remain future work.
 
 ## Phase 4 — Payments, expenses, dealer management, and accounting
 
@@ -40,7 +44,7 @@
 ## Phase 5 — Reports, notifications, settings, and audit
 
 - Implement database-backed operational and financial reports with date/business filters and exports.
-- Add configurable notifications, company/tax settings, and audit coverage for sensitive business operations.
+- Complete configurable notifications, company/tax settings, and audit coverage for sensitive business operations. Company settings CRUD/readiness and relevant audit logging are implemented.
 - Keep external messaging disabled unless explicitly configured and authorized.
 
 ## Phase 6 — Quality, security, performance, deployment, and handover

@@ -1,21 +1,19 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Activity } from "lucide-react";
 import { api, isEndpointMissing } from "../lib/api";
 import { RANGE_LABELS, resolveRange, type RangeKey } from "../lib/dateRanges";
 import { formatCount, formatDate, formatINR } from "../lib/format";
 import { Card, EmptyState, ErrorState, LoadingState, NotAvailableState, Skeleton } from "../components/ui";
+import type { DashboardChartData } from "./DashboardCharts";
+
+const DashboardCharts = lazy(() => import("./DashboardCharts").then((module) => ({ default: module.DashboardCharts })));
 
 // Expected response of GET /api/v1/dashboard (see docs/API_CONTRACT.md). Money values are decimal strings.
 type Num = string | number;
-type DashboardData = {
+type DashboardData = DashboardChartData & {
   kpis?: Record<string, Num | null>;
-  sales_trend?: { date: string; amount: Num }[];
-  purchase_trend?: { date: string; amount: Num }[];
-  revenue_vs_expenses?: { period: string; revenue: Num; expenses: Num }[];
   top_products?: { name: string; quantity: Num; amount: Num }[];
-  payment_methods?: { method: string; amount: Num }[];
   recent_invoices?: { invoice_number: string; customer_name: string; invoice_date: string; grand_total: Num; status: string }[];
   recent_transactions?: { reference: string; date: string; description: string; amount: Num }[];
 };
@@ -35,20 +33,6 @@ const KPIS: { key: string; label: string; kind: "money" | "count" }[] = [
   { key: "low_stock_products", label: "Low-stock products", kind: "count" },
   { key: "ev_vehicles_in_stock", label: "EVs in stock", kind: "count" },
 ];
-
-const COLORS = ["#18563a", "#c9a43c", "#4f9f71", "#a9862c", "#7dbc96", "#14442f"];
-// Chart axes need numbers; these conversions are for drawing only, never for accounting.
-const n = (v: Num | null | undefined) => Number(v ?? 0);
-const compactINR = (v: number) => new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 }).format(v);
-
-function ChartCard({ title, empty, children }: { title: string; empty: boolean; children: ReactNode }) {
-  return (
-    <Card className="p-4">
-      <h3 className="mb-3 text-sm font-semibold text-slate-800">{title}</h3>
-      {empty ? <EmptyState title="No data in this period" /> : <div className="h-64">{children}</div>}
-    </Card>
-  );
-}
 
 function SystemStatus() {
   const health = useQuery({ queryKey: ["health"], queryFn: ({ signal }) => api<{ status: string }>("/health", { signal }), retry: false });
@@ -151,56 +135,9 @@ export function DashboardPage() {
             })}
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <ChartCard title="Sales trend" empty={!query.data.sales_trend?.length}>
-              <ResponsiveContainer>
-                <LineChart data={(query.data.sales_trend ?? []).map((p) => ({ date: p.date, amount: n(p.amount) }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e1cc" />
-                  <XAxis dataKey="date" tickFormatter={(d: string) => formatDate(d).slice(0, 6)} fontSize={12} />
-                  <YAxis tickFormatter={compactINR} fontSize={12} />
-                  <Tooltip formatter={(v: number) => formatINR(v)} labelFormatter={(d: string) => formatDate(d)} />
-                  <Line type="monotone" dataKey="amount" name="Sales" stroke="#18563a" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
-            <ChartCard title="Purchase trend" empty={!query.data.purchase_trend?.length}>
-              <ResponsiveContainer>
-                <LineChart data={(query.data.purchase_trend ?? []).map((p) => ({ date: p.date, amount: n(p.amount) }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e1cc" />
-                  <XAxis dataKey="date" tickFormatter={(d: string) => formatDate(d).slice(0, 6)} fontSize={12} />
-                  <YAxis tickFormatter={compactINR} fontSize={12} />
-                  <Tooltip formatter={(v: number) => formatINR(v)} labelFormatter={(d: string) => formatDate(d)} />
-                  <Line type="monotone" dataKey="amount" name="Purchases" stroke="#c9a43c" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
-            <ChartCard title="Revenue vs expenses" empty={!query.data.revenue_vs_expenses?.length}>
-              <ResponsiveContainer>
-                <BarChart data={(query.data.revenue_vs_expenses ?? []).map((p) => ({ period: p.period, revenue: n(p.revenue), expenses: n(p.expenses) }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e8e1cc" />
-                  <XAxis dataKey="period" fontSize={12} />
-                  <YAxis tickFormatter={compactINR} fontSize={12} />
-                  <Tooltip formatter={(v: number) => formatINR(v)} />
-                  <Legend />
-                  <Bar dataKey="revenue" name="Revenue" fill="#18563a" />
-                  <Bar dataKey="expenses" name="Expenses" fill="#c9a43c" />
-                </BarChart>
-              </ResponsiveContainer>
-            </ChartCard>
-            <ChartCard title="Payment methods" empty={!query.data.payment_methods?.length}>
-              <ResponsiveContainer>
-                <PieChart>
-                  <Pie data={(query.data.payment_methods ?? []).map((p) => ({ name: p.method, value: n(p.amount) }))} dataKey="value" nameKey="name" outerRadius={90} label>
-                    {(query.data.payment_methods ?? []).map((_, i) => (
-                      <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(v: number) => formatINR(v)} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </div>
+          <Suspense fallback={<Skeleton className="h-64" />}>
+            <DashboardCharts data={query.data} />
+          </Suspense>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="p-4">

@@ -45,3 +45,13 @@
 - Fixed the Vite config import so the frontend typecheck, tests, and build run successfully.
 - Added a frontend lockfile, upgraded vulnerable router/validation/build/test dependencies, and split chart code into its own production chunk. `npm audit` reports zero vulnerabilities.
 - No shared/default administrator password is configured. Create the first admin interactively with `python -m app.cli create-admin`; use a unique strong password.
+
+## 2026-11-07 — Phase 2b: company settings, customers, and invoice drafts
+
+- Added permission-checked company settings GET/PUT and readiness endpoints. GSTIN checksum/state, PAN, invoice prefix, state, and financial-year start month are validated. Audit records omit bank account, IFSC, and UPI values.
+- Added customer state lookup, search/pagination/filtering, GSTIN/PAN/phone checks, duplicate active GSTIN conflict responses, and soft deletion.
+- Added draft-only invoice create/read/update/delete and preview APIs. Preview and persisted amounts, tax splits, HSN summaries, round-off, and words are computed by `berev_core`; active database GST rates and company state are used. Drafts remain unnumbered and do not change stock.
+- Added validation for active customers/products/HSN codes, available serialized products, duplicate serials, quantity precision, and active GST rates. Verified the PostgreSQL invoice guard triggers reject edits to issued invoices/items.
+- Added the settings, customer, and invoice editor screens; readiness gating; debounced server-only totals; and lazy chart loading with Recharts split into chunks below the Vite large-chunk threshold.
+- Validation on local PostgreSQL 16.15 test database: complete backend suite passed (55 tests). Frontend suite passed (20 tests), TypeScript typecheck passed, and production build succeeded without a large-chunk warning. Vite still reports dependency annotation notices from Zod that it removes safely.
+- Not implemented in this phase: invoice issuance/numbering, PDFs, payments, stock deduction/reservation, quotations, or production deployment. A browser walkthrough and tax-professional review are still required before live invoicing.

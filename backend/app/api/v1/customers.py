@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import require_permissions
+from app.auth.dependencies import get_current_user, require_permissions
 from app.db.session import get_db
 from app.models import AuditLog, Branch, Customer, State, User
+from berev_core.gst import is_valid_gstin
 
 router = APIRouter(tags=["customers"])
 CustomerType = Literal["individual", "business", "dealer", "distributor", "franchise", "corporate"]
+PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+PHONE_PATTERN = re.compile(r"^\+?[0-9().\-\s]{7,24}$")
 
 
 class CustomerWrite(BaseModel):
@@ -61,6 +65,30 @@ class CustomerWrite(BaseModel):
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         return value.strip() or None if value is not None else None
+
+    @field_validator("pan")
+    @classmethod
+    def validate_pan(cls, value: str | None) -> str | None:
+        if value is not None and not PAN_PATTERN.fullmatch(value):
+            raise ValueError("PAN must be 10 characters in the format AAAAA9999A")
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str | None) -> str | None:
+        if value is not None and (
+            not PHONE_PATTERN.fullmatch(value) or sum(character.isdigit() for character in value) < 7
+        ):
+            raise ValueError("phone must contain at least 7 digits and only standard phone characters")
+        return value
+
+    @model_validator(mode="after")
+    def validate_gstin_state(self) -> CustomerWrite:
+        if self.gstin is not None and (
+            self.state_code is None or not is_valid_gstin(self.gstin, self.state_code)
+        ):
+            raise ValueError("GSTIN is invalid or its state prefix does not match state_code")
+        return self
 
 
 class CustomerResponse(BaseModel):
@@ -153,6 +181,15 @@ def _validate_references(session: Session, values: CustomerWrite) -> None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown branch_id")
 
 
+def _require_state_read_permission(
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    granted = {permission.code for permission in user.role.permissions}
+    if not {"customers:read", "settings:read"}.intersection(granted):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    return user
+
+
 def _commit_or_conflict(session: Session) -> None:
     try:
         session.commit()
@@ -171,8 +208,17 @@ def list_customers(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     q: str = Query(default="", max_length=200),
+    customer_type: CustomerType | None = None,
+    state_code: str | None = Query(default=None, min_length=2, max_length=2),
+    is_active: bool | None = None,
 ) -> CustomerPage:
     filters = [Customer.deleted_at.is_(None), _visible_to(user)]
+    if customer_type is not None:
+        filters.append(Customer.customer_type == customer_type)
+    if state_code is not None:
+        filters.append(Customer.state_code == state_code.strip().upper())
+    if is_active is not None:
+        filters.append(Customer.is_active.is_(is_active))
     search = q.strip()
     if search:
         pattern = f"%{search}%"
@@ -195,6 +241,16 @@ def list_customers(
         .limit(page_size)
     ).all()
     return CustomerPage(items=[CustomerResponse.model_validate(item) for item in items], total=total)
+
+
+@router.get("/states")
+def list_states(
+    user: Annotated[User, Depends(_require_state_read_permission)],
+    session: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, str]]:
+    del user
+    states = session.scalars(select(State).order_by(State.name)).all()
+    return [{"code": state.code.strip(), "name": state.name} for state in states]
 
 
 @router.post(
