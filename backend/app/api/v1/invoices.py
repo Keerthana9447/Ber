@@ -28,11 +28,13 @@ from starlette.responses import StreamingResponse
 from xml.sax.saxutils import escape
 
 from app.auth.dependencies import get_current_user, require_permissions
+from app.api.v1.payments import invoice_balance
 from app.db.session import get_db
 from app.models import (
     AuditLog,
     CompanySettings,
     Customer,
+    CreditNote,
     GstRate,
     HsnSacCode,
     Inventory,
@@ -41,6 +43,7 @@ from app.models import (
     JournalEntry,
     JournalEntryLine,
     PaymentAllocation,
+    Payment,
     Product,
     ProductSerial,
     StockMovement,
@@ -488,6 +491,33 @@ def _invoice_output(session: Session, invoice: Invoice) -> dict[str, object]:
     product_ids = {item.product_id for item in items if item.product_id is not None}
     products = session.scalars(select(Product).where(Product.id.in_(product_ids))).all() if product_ids else []
     service_by_product = {product.id: product.is_service for product in products}
+    customer = session.get(Customer, invoice.customer_id)
+    if customer is None:
+        credit_limit_warning = None
+    else:
+        open_invoices = session.scalars(
+            select(Invoice).where(
+                Invoice.customer_id == customer.id,
+                Invoice.status == "issued",
+                Invoice.doc_type.in_(("tax_invoice", "bill_of_supply")),
+            )
+        ).all()
+        exposure = Decimal("0")
+        for row in open_invoices:
+            balance = invoice_balance(session, row)
+            exposure += Decimal(balance["outstanding"])
+        if invoice.status in {"draft", "approved"}:
+            exposure += Decimal(invoice.grand_total)
+        credit_limit_warning = (
+            f"Draft exceeds customer credit limit ({exposure} > {customer.credit_limit})"
+            if customer.credit_limit > 0 and exposure > customer.credit_limit
+            else None
+        )
+    payment_summary = (
+        invoice_balance(session, invoice)
+        if invoice.status in {"issued", "cancelled"}
+        else {}
+    )
     return {
         **_invoice_snapshot(invoice),
         "id": invoice.id,
@@ -512,6 +542,8 @@ def _invoice_output(session: Session, invoice: Invoice) -> dict[str, object]:
         "notes": invoice.notes,
         "created_at": invoice.created_at,
         "updated_at": invoice.updated_at,
+        **payment_summary,
+        "credit_limit_warning": credit_limit_warning,
         "lines": [
             {
                 "id": item.id,
@@ -582,6 +614,7 @@ def _snapshot_parties(invoice: Invoice, settings: CompanySettings, customer: Cus
     invoice.billing_address = customer.billing_address
     invoice.shipping_address = customer.shipping_address
     invoice.seller_gstin = settings.gstin
+    invoice.seller_state_code = settings.state_code
     invoice.seller_legal_name = settings.legal_name
     invoice.seller_trade_name = settings.trade_name
     invoice.seller_pan = settings.pan
@@ -1201,8 +1234,23 @@ def cancel_invoice(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Proforma documents cannot be cancelled")
         if invoice.status != "issued":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only issued invoices can be cancelled")
-        if session.scalar(select(PaymentAllocation.id).where(PaymentAllocation.invoice_id == invoice.id).limit(1)):
+        if session.scalar(
+            select(PaymentAllocation.id)
+            .join(Payment, Payment.id == PaymentAllocation.payment_id)
+            .where(
+                PaymentAllocation.invoice_id == invoice.id,
+                Payment.direction == "in",
+                Payment.status == "recorded",
+            )
+            .limit(1)
+        ):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice has payment allocations and cannot be cancelled")
+        if session.scalar(
+            select(CreditNote.id)
+            .where(CreditNote.invoice_id == invoice.id, CreditNote.status == "issued")
+            .limit(1)
+        ):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Invoice has issued credit notes and cannot be cancelled")
         old_values = _invoice_snapshot(invoice)
         items = session.scalars(
             select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id).order_by(InvoiceItem.id)

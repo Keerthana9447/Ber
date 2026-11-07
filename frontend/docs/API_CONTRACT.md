@@ -1,8 +1,8 @@
 # API contract the UI expects
 
-The UI only calls real endpoints. The backend provides `/health`, `/auth/*`, `/dashboard`, and customer
-read/create/update/delete endpoints. Other modules show a "not available yet" state while their API routes
-are unimplemented. Nothing is faked.
+The UI only calls real endpoints. The backend provides `/health`, `/auth/*`, `/dashboard`, settings, customers,
+products/inventory, invoice lifecycle, payments/refunds, credit notes, and customer ledgers. Unimplemented
+modules show a "not available yet" state; no business data is faked.
 
 All paths are under `/api/v1`. The UI sends `Authorization: Bearer <access_token>` and never computes
 money or tax; it only formats what the server returns. Money values should be decimal **strings**.
@@ -85,6 +85,26 @@ allocations and issued credit/debit notes.
   places). A single database transaction locks the product and stock row, rejects negative stock, updates the
   current stock cache, and appends an immutable stock movement. Serialized and batch-tracked items require their
   serial/batch details and are not accepted by this manual adjustment endpoint.
+
+## Invoices, payments, and credit notes
+
+- Invoice draft, preview, approval, issue, cancellation, and PDF endpoints require the corresponding `sales:*`
+  permissions. Preview and invoice values are computed/stored by the backend; the frontend only displays them.
+- `GET /invoices/{id}/payments` returns the invoice's received, credited, outstanding, customer-credit, payment
+  status, and allocated payment history.
+- `GET /payment-methods` requires `payments:read`. `POST /payments` records a receipt/advance and accepts
+  optional explicit allocations; omitting allocations uses oldest-first. `POST /payments/refunds` requires
+  `payments:manage` and refunds only available advance credit or credit on a selected issued invoice.
+- `POST /payments/{id}/reverse` posts an accounting reversal and retains both records. `GET /payments/{id}/pdf`
+  downloads the authenticated stored receipt PDF.
+- `GET /credit-notes` and `GET /credit-notes/{id}` require `sales:read`. `POST /credit-notes` requires
+  `sales:create`, computes GST from the original invoice, optionally restocks to its original warehouse/serial,
+  and posts accounting entries. Credit-note PDFs use stored values.
+- `GET /customers/{id}/ledger?from=YYYY-MM-DD&to=YYYY-MM-DD&page=1&page_size=50` requires `customers:read`
+  and returns opening balance, paged transaction rows, running balances, and closing balance. The customer
+  master opening-balance field is not included because it has no debit/credit direction.
+- Gateway receipts are disabled unless `GATEWAY_WEBHOOK_SECRET` is configured; the webhook requires a valid
+  HMAC-SHA256 signature.
 
 ## Other
 - `GET /notifications?page_size=10` -> `{ "items": [{ "id", "title", "body", "is_read" }] }`

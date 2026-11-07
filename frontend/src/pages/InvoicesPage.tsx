@@ -87,7 +87,30 @@ type InvoiceDraft = {
   cess_total: string;
   round_off: string;
   grand_total: string;
+  amount_received?: string;
+  credited_amount?: string;
+  outstanding?: string;
+  customer_credit?: string;
+  payment_status?: string;
+  credit_limit_warning?: string | null;
   lines: InvoiceLineResponse[];
+};
+type InvoicePayment = {
+  id: number;
+  payment_number: string;
+  payment_date: string;
+  method: string | null;
+  amount: string;
+  status: string;
+  allocations: { invoice_id: number; amount: string }[];
+};
+type InvoicePaymentData = {
+  amount_received: string;
+  credited_amount: string;
+  outstanding: string;
+  customer_credit: string;
+  payment_status: string;
+  items: InvoicePayment[];
 };
 type PreviewLine = {
   product_id: number | null;
@@ -533,9 +556,11 @@ function InvoiceDraftEditor({
       draft ? `/invoices/${draft.id}` : "/invoices",
       { method: draft ? "PUT" : "POST", body: invoiceDraftRequestBody(values) },
     ),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
       await queryClient.invalidateQueries({ queryKey: ["invoices", "list"] });
-      toast("success", "Invoice draft saved.");
+      toast("success", saved.credit_limit_warning
+        ? `Invoice draft saved. ${saved.credit_limit_warning}`
+        : "Invoice draft saved.");
       onSaved();
     },
     onError: (error) => {
@@ -558,6 +583,7 @@ function InvoiceDraftEditor({
         <div><h2 className="text-xl font-semibold text-forest-900">{draft ? "Edit invoice draft" : "New invoice draft"}</h2><p className="text-sm text-slate-500">Drafts do not receive invoice numbers and do not change stock.</p></div>
         <Button type="button" variant="secondary" onClick={onCancel}><ArrowLeft className="h-4 w-4" aria-hidden /> Back to invoices</Button>
       </div>
+      {draft?.credit_limit_warning && <p role="status" className="rounded-lg border border-gold-300 bg-gold-300/20 p-3 text-sm text-gold-700">{draft.credit_limit_warning}</p>}
       <Card className="p-5">
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block text-sm font-medium text-slate-700">Search customer
@@ -654,6 +680,7 @@ export function InvoiceReadOnlyView({
         </div>
       </div>
       <Card className="overflow-x-auto p-5">
+        {invoice.credit_limit_warning && <p role="status" className="mb-3 rounded-lg border border-gold-300 bg-gold-300/20 p-3 text-sm text-gold-700">{invoice.credit_limit_warning}</p>}
         <p className="mb-3 text-sm text-slate-600">Customer ID {invoice.customer_id} · Place of supply {invoice.place_of_supply_code}</p>
         <table className="w-full min-w-[700px] text-left text-sm">
           <thead><tr className="border-b border-ivory-300"><th className="py-2">Description / HSN</th><th>Qty</th><th>Price</th><th>Taxable</th><th>GST</th></tr></thead>
@@ -673,6 +700,54 @@ export function InvoiceReadOnlyView({
         </dl>
       </Card>
     </div>
+  );
+}
+
+function InvoicePaymentsPanel({ invoiceId }: { invoiceId: number }) {
+  const payments = useQuery({
+    queryKey: ["invoices", "payments", invoiceId],
+    queryFn: ({ signal }) => api<InvoicePaymentData>(`/invoices/${invoiceId}/payments`, { signal }),
+    retry: false,
+  });
+
+  if (payments.isLoading) return <LoadingState label="Loading payment balance…" />;
+  if (payments.isError) return <ErrorState message={payments.error.message} onRetry={() => void payments.refetch()} />;
+  if (!payments.data) return null;
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="grid gap-3 border-b border-ivory-200 p-5 sm:grid-cols-4">
+        <div><p className="text-xs uppercase text-slate-500">Payment status</p><Badge>{payments.data.payment_status}</Badge></div>
+        <div><p className="text-xs uppercase text-slate-500">Received</p><p className="font-medium">{formatINR(payments.data.amount_received)}</p></div>
+        <div><p className="text-xs uppercase text-slate-500">Credited</p><p className="font-medium">{formatINR(payments.data.credited_amount)}</p></div>
+        <div><p className="text-xs uppercase text-slate-500">Outstanding</p><p className="font-medium">{formatINR(payments.data.outstanding)}</p></div>
+        {Number(payments.data.customer_credit) > 0 && (
+          <div className="sm:col-span-4"><p className="text-sm text-gold-700">Customer credit: {formatINR(payments.data.customer_credit)}</p></div>
+        )}
+      </div>
+      <div className="px-5 py-4">
+        <h2 className="mb-3 font-semibold">Receipts allocated to this invoice</h2>
+        {payments.data.items.length === 0 ? (
+          <p className="text-sm text-slate-500">No receipt allocations are recorded.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-left text-sm">
+              <thead className="bg-ivory-100 text-xs uppercase text-slate-500"><tr><th className="p-2">Receipt</th><th className="p-2">Date</th><th className="p-2">Method</th><th className="p-2">Status</th><th className="p-2 text-right">Amount</th></tr></thead>
+              <tbody className="divide-y divide-ivory-200">{payments.data.items.map((payment) => {
+                const allocated = payment.allocations.find((allocation) => allocation.invoice_id === invoiceId)?.amount ?? "0";
+                return (
+                  <tr key={payment.id}>
+                    <td className="p-2">{payment.payment_number}</td><td className="p-2">{formatDate(payment.payment_date)}</td>
+                    <td className="p-2">{payment.method ?? "—"}</td><td className="p-2"><Badge>{payment.status}</Badge></td>
+                    <td className="p-2 text-right">{formatINR(allocated)}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -788,6 +863,7 @@ export function InvoicesPage() {
       <div className="mx-auto max-w-7xl space-y-4">
         <InvoiceReadinessBanner />
         <InvoiceReadOnlyView invoice={detail.data} onBack={() => setViewId(null)} onDownload={() => downloadPdf(viewId)} downloading={downloadingId === viewId} onCancel={() => setCancelTarget(viewId)} />
+        {(detail.data.status === "issued" || detail.data.status === "cancelled") && <InvoicePaymentsPanel invoiceId={detail.data.id} />}
         {can("sales:create") && detail.data.doc_type === "proforma" && detail.data.status === "draft" && (
           <Button onClick={() => setWorkflowTarget({ id: viewId, customer_name: "proforma", action: "convert" })}>Convert to tax invoice draft</Button>
         )}

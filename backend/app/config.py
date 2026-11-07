@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "test", "production"] = "development"
     database_url: SecretStr
     jwt_secret_key: SecretStr = Field(min_length=32)
+    gateway_webhook_secret: SecretStr | None = None
     jwt_algorithm: Literal["HS256"] = "HS256"
     jwt_issuer: str = "berev-erp"
     access_token_minutes: int = Field(default=15, ge=1, le=1440)

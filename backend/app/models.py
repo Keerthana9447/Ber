@@ -524,6 +524,7 @@ class Invoice(Base):
     issue_idempotency_key: Mapped[str | None] = mapped_column(Text)
     fy_start_year: Mapped[int | None] = mapped_column(Integer)
     customer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('customers.id'), nullable=False)
+    seller_state_code: Mapped[str | None] = mapped_column(CHAR(2), ForeignKey('states.code'))
     sales_order_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('sales_orders.id'))
     branch_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('branches.id'))
     salesperson_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('users.id'))
@@ -618,12 +619,13 @@ class CreditNote(Base):
     round_off: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
     grand_total: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
     restock: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('FALSE'))
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'issued'"))
+    hsn_summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'draft'"))
     created_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('users.id'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('now()'))
     __table_args__ = (
         CheckConstraint(text('grand_total > 0')),
-        CheckConstraint(text("status IN ('issued','cancelled')")),
+        CheckConstraint(text("status IN ('draft','issued','cancelled')")),
     )
 
 class CreditNoteItem(Base):
@@ -633,6 +635,20 @@ class CreditNoteItem(Base):
     invoice_item_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('invoice_items.id'), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
     taxable_value: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    hsn_sac: Mapped[str] = mapped_column(Text, nullable=False)
+    unit: Mapped[str | None] = mapped_column(Text)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14,4), nullable=False)
+    discount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    gst_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False)
+    cess_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False, server_default=text('0'))
+    cgst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    sgst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    igst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    cess: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    serial_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('product_serials.id'))
+    warehouse_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('warehouses.id'))
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(14,4))
     __table_args__ = (
         CheckConstraint(text('quantity > 0')),
     )
@@ -825,3 +841,4 @@ Index('jel_entry_ix', JournalEntryLine.entry_id, unique=False)
 Index('notif_user_ix', Notification.user_id, Notification.is_read, Notification.created_at.desc(), unique=False)
 Index('audit_entity_ix', AuditLog.entity_type, AuditLog.entity_id, unique=False)
 Index('audit_time_ix', AuditLog.created_at.desc(), unique=False)
+Index('payment_reversal_uq', Payment.reverses_payment_id, unique=True, postgresql_where=text('reverses_payment_id IS NOT NULL'))

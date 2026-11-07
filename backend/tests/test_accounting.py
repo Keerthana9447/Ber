@@ -31,6 +31,7 @@ class PostingTests(unittest.TestCase):
         A.post_credit_note(T, "C1", i, cogs_reversal=D("10"))
         A.post_purchase_invoice(T, "P1", i)
         A.post_customer_receipt(T, "R1", "10", "cash", advance=True)
+        A.post_customer_refund(T, "RF1", "5", "bank", advance=True)
         A.post_supplier_payment(T, "SP1", "10", "bank")
         A.post_expense(T, "E1", "5100", "10", "cash")
 
@@ -39,6 +40,14 @@ class PostingTests(unittest.TestCase):
         r = A.reverse_entry(e, T, "wrong customer")
         self.assertEqual(r.reverses, "S1")
         self.assertEqual(A.trial_balance([e, r])["rows"], [])
+
+    def test_customer_refunds_debit_the_selected_credit_account(self):
+        advance_refund = A.post_customer_refund(T, "RF1", "25.00", "bank", advance=True)
+        invoice_credit_refund = A.post_customer_refund(T, "RF2", "40.00", "cash")
+        self.assertEqual(advance_refund.lines[0].account, A.ADVANCES)
+        self.assertEqual(invoice_credit_refund.lines[0].account, A.AR)
+        self.assertEqual(A.trial_balance([advance_refund, invoice_credit_refund])["total_debit"], D("65.00"))
+        self.assertEqual(A.trial_balance([advance_refund, invoice_credit_refund])["total_credit"], D("65.00"))
 
     def test_end_to_end_business_scenario(self):
         entries = []

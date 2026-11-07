@@ -5,6 +5,9 @@ import uuid
 from datetime import date
 from io import BytesIO
 from decimal import Decimal
+import hashlib
+import hmac
+import json
 from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
@@ -20,6 +23,9 @@ from app.models import (
     Invoice,
     Inventory,
     JournalEntry,
+    Payment,
+    PaymentAllocation,
+    PaymentMethod,
     Permission,
     ProductSerial,
     Role,
@@ -30,6 +36,7 @@ from app.seed import seed_reference_data
 from berev_core.gst import LineInput, compute_invoice, gstin_checksum_char
 from berev_core.words import amount_in_words
 from pypdf import PdfReader
+from pydantic import SecretStr
 
 
 @unittest.skipUnless(
@@ -248,6 +255,451 @@ class BusinessApiTests(unittest.TestCase):
                         headers=headers,
                     )
                     self.assertEqual(cancelled.status_code, 200, cancelled.text)
+
+        asyncio.run(exercise_api())
+
+    def test_phase3b_payments_credit_notes_webhook_and_ledger(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        pan = f"AB{chr(65 + int(suffix[0], 16))}DE{int(suffix[:4], 16) % 10000:04d}F"
+        gstin_prefix = f"06{pan}1Z"
+        gstin = gstin_prefix + gstin_checksum_char(gstin_prefix)
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                configured = await client.put(
+                    "/api/v1/settings",
+                    json={
+                        "legal_name": "Payment Integration Company",
+                        "address": "Payment integration address",
+                        "gstin": gstin,
+                        "pan": pan,
+                        "state_code": "06",
+                        "invoice_prefix": f"P{suffix[:2]}",
+                        "fy_start_month": 4,
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                customer = await client.post(
+                    "/api/v1/customers",
+                    json={
+                        "code": f"PAY-{suffix}",
+                        "name": "Payment integration customer",
+                        "customer_type": "business",
+                        "state_code": "29",
+                        "credit_limit": "1000.00",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(customer.status_code, 201, customer.text)
+                customer_id = customer.json()["id"]
+                methods = await client.get("/api/v1/payment-methods", headers=headers)
+                self.assertEqual(methods.status_code, 200, methods.text)
+                method_id = next(item["id"] for item in methods.json() if item["ledger_kind"] == "bank")
+
+                category = await client.post(
+                    "/api/v1/product-categories",
+                    json={"name": f"Payment category {suffix}"},
+                    headers=headers,
+                )
+                self.assertEqual(category.status_code, 201, category.text)
+                hsn_code = f"{int(suffix, 16) % 100000000:08d}"
+                hsn = await client.post(
+                    "/api/v1/hsn-sac-codes",
+                    json={
+                        "code": hsn_code,
+                        "description": "Payment test goods",
+                        "kind": "HSN",
+                        "default_gst_rate": "18.00",
+                        "default_cess_rate": "0",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(hsn.status_code, 201, hsn.text)
+                options = await client.get("/api/v1/product-options", headers=headers)
+                self.assertEqual(options.status_code, 200, options.text)
+                rate = next((item["rate"] for item in options.json()["gst_rates"] if item["rate"] == "18.00"), None)
+                if rate is None:
+                    created_rate = await client.post(
+                        "/api/v1/gst-rates",
+                        json={"rate": "18.00", "description": "Payment integration rate"},
+                        headers=headers,
+                    )
+                    self.assertEqual(created_rate.status_code, 201, created_rate.text)
+                    rate = created_rate.json()["rate"]
+                warehouse = await client.post(
+                    "/api/v1/warehouses",
+                    json={"code": f"PY-{suffix}", "name": f"Payment warehouse {suffix}"},
+                    headers=headers,
+                )
+                self.assertEqual(warehouse.status_code, 201, warehouse.text)
+                product = await client.post(
+                    "/api/v1/products",
+                    json={
+                        "sku": f"PY-{suffix}",
+                        "name": "Payment test goods",
+                        "category_id": category.json()["id"],
+                        "hsn_sac": hsn_code,
+                        "unit": "PCS",
+                        "purchase_price": "40.00",
+                        "selling_price": "100.00",
+                        "gst_rate": rate,
+                        "cess_rate": "0",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(product.status_code, 201, product.text)
+                opening = await client.post(
+                    "/api/v1/inventory/adjustments",
+                    json={
+                        "product_id": product.json()["id"],
+                        "warehouse_id": warehouse.json()["id"],
+                        "quantity_delta": "3",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(opening.status_code, 201, opening.text)
+
+                async def issue_one():
+                    draft = await client.post(
+                        "/api/v1/invoices",
+                        json={
+                            "customer_id": customer_id,
+                            "place_of_supply_code": "29",
+                            "invoice_date": date.today().isoformat(),
+                            "due_date": date.today().isoformat(),
+                            "lines": [{
+                                "product_id": product.json()["id"],
+                                "warehouse_id": warehouse.json()["id"],
+                                "description": "Payment test goods",
+                                "hsn_sac": hsn_code,
+                                "unit": "PCS",
+                                "quantity": "1",
+                                "unit_price": "100.00",
+                                "discount_pct": "0",
+                                "discount_amount": "0",
+                                "gst_rate": rate,
+                                "cess_rate": "0",
+                            }],
+                        },
+                        headers=headers,
+                    )
+                    self.assertEqual(draft.status_code, 201, draft.text)
+                    invoice_id = draft.json()["id"]
+                    approved = await client.post(f"/api/v1/invoices/{invoice_id}/approve", headers=headers)
+                    self.assertEqual(approved.status_code, 200, approved.text)
+                    issued = await client.post(f"/api/v1/invoices/{invoice_id}/issue", headers=headers)
+                    self.assertEqual(issued.status_code, 200, issued.text)
+                    return invoice_id, issued.json()
+
+                invoice_id, invoice = await issue_one()
+                self.assertEqual(invoice["grand_total"], "118.00")
+                self.assertEqual(invoice["payment_status"], "unpaid")
+                unauthenticated = await client.post("/api/v1/payments", json={})
+                self.assertEqual(unauthenticated.status_code, 401)
+                read_only_role = Role(name=f"Payment Read Only {suffix}")
+                with self.factory.begin() as session:
+                    read_only_role.permissions = [session.scalar(select(Permission).where(Permission.code == "payments:read"))]
+                    session.add(read_only_role)
+                    session.flush()
+                    read_only_user = User(
+                        email=f"payments-read-{suffix}@example.test",
+                        full_name="Payments read only",
+                        password_hash=hash_password(uuid.uuid4().hex),
+                        role_id=read_only_role.id,
+                        must_change_password=False,
+                    )
+                    session.add(read_only_user)
+                    session.flush()
+                    read_only_id = read_only_user.id
+                read_only_headers = {
+                    "Authorization": f"Bearer {create_token_pair(self.settings, read_only_id).access_token}"
+                }
+                forbidden = await client.post(
+                    "/api/v1/payments",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "1.00",
+                        "payment_date": date.today().isoformat(),
+                    },
+                    headers=read_only_headers,
+                )
+                self.assertEqual(forbidden.status_code, 403)
+
+                note_body = {
+                    "invoice_id": invoice_id,
+                    "note_date": date.today().isoformat(),
+                    "reason": "Partial quantity returned",
+                    "restock": True,
+                    "lines": [{"invoice_item_id": invoice["lines"][0]["id"], "quantity": "0.5"}],
+                }
+                note_response = await client.post("/api/v1/credit-notes", json=note_body, headers=headers)
+                self.assertEqual(note_response.status_code, 201, note_response.text)
+                note = note_response.json()
+                blocked_cancel = await client.post(
+                    f"/api/v1/invoices/{invoice_id}/cancel",
+                    json={"reason": "Credit note has already been issued"},
+                    headers=headers,
+                )
+                self.assertEqual(blocked_cancel.status_code, 409)
+                expected_note = compute_invoice(
+                    [LineInput("Payment test goods", hsn_code, "0.5", "100.00", rate, "0", "0", "0", "PCS")],
+                    "06",
+                    "29",
+                    allowed_rates={Decimal(rate)},
+                )
+                self.assertEqual(Decimal(note["grand_total"]), expected_note.grand_total)
+                self.assertEqual(Decimal(note["taxable_total"]), expected_note.taxable_total)
+                excessive_note = await client.post(
+                    "/api/v1/credit-notes",
+                    json={**note_body, "lines": [{"invoice_item_id": invoice["lines"][0]["id"], "quantity": "0.6"}]},
+                    headers=headers,
+                )
+                self.assertEqual(excessive_note.status_code, 409)
+                note_pdf = await client.get(f"/api/v1/credit-notes/{note['id']}/pdf", headers=headers)
+                self.assertEqual(note_pdf.status_code, 200, note_pdf.text)
+                note_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(note_pdf.content)).pages)
+                self.assertIn(note["note_number"], note_text)
+                self.assertIn(note["amount_in_words"], note_text)
+                with self.factory() as session:
+                    self.assertEqual(
+                        session.get(Inventory, (product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("2.5"),
+                    )
+
+                first_payment = await client.post(
+                    "/api/v1/payments",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "20.00",
+                        "payment_date": date.today().isoformat(),
+                        "allocations": [{"invoice_id": invoice_id, "amount": "20.00"}],
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(first_payment.status_code, 201, first_payment.text)
+                balance = await client.get(f"/api/v1/invoices/{invoice_id}", headers=headers)
+                self.assertEqual(balance.json()["payment_status"], "partially_paid")
+                self.assertEqual(balance.json()["outstanding"], "39.00")
+                second_payment = await client.post(
+                    "/api/v1/payments",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "39.00",
+                        "payment_date": date.today().isoformat(),
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(second_payment.status_code, 201, second_payment.text)
+                balance = await client.get(f"/api/v1/invoices/{invoice_id}", headers=headers)
+                self.assertEqual(balance.json()["payment_status"], "paid")
+                self.assertEqual(balance.json()["outstanding"], "0.00")
+                receipt_pdf = await client.get(f"/api/v1/payments/{first_payment.json()['id']}/pdf", headers=headers)
+                self.assertEqual(receipt_pdf.status_code, 200, receipt_pdf.text)
+                receipt_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(receipt_pdf.content)).pages)
+                self.assertIn(first_payment.json()["payment_number"], receipt_text)
+                reversed_payment = await client.post(
+                    f"/api/v1/payments/{second_payment.json()['id']}/reverse",
+                    headers=headers,
+                )
+                self.assertEqual(reversed_payment.status_code, 200, reversed_payment.text)
+                restored_balance = await client.get(f"/api/v1/invoices/{invoice_id}", headers=headers)
+                self.assertEqual(restored_balance.json()["outstanding"], "39.00")
+                paged_ledger = await client.get(
+                    f"/api/v1/customers/{customer_id}/ledger",
+                    params={"page": 1, "page_size": 1},
+                    headers=headers,
+                )
+                self.assertEqual(paged_ledger.status_code, 200, paged_ledger.text)
+                self.assertEqual(paged_ledger.json()["closing_balance"], "39.00")
+                self.assertEqual(paged_ledger.json()["total"], 5)
+                duplicate_reverse = await client.post(
+                    f"/api/v1/payments/{second_payment.json()['id']}/reverse",
+                    headers=headers,
+                )
+                self.assertEqual(duplicate_reverse.status_code, 409)
+
+                final_credit_note = await client.post(
+                    "/api/v1/credit-notes",
+                    json={
+                        **note_body,
+                        "reason": "Remaining invoice quantity returned",
+                        "restock": False,
+                        "lines": [{"invoice_item_id": invoice["lines"][0]["id"], "quantity": "0.5"}],
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(final_credit_note.status_code, 201, final_credit_note.text)
+                refund = await client.post(
+                    "/api/v1/payments/refunds",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "20.00",
+                        "payment_date": date.today().isoformat(),
+                        "source": "invoice_credit",
+                        "invoice_id": invoice_id,
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(refund.status_code, 201, refund.text)
+                self.assertEqual(refund.json()["direction"], "out")
+                refunded_balance = await client.get(f"/api/v1/invoices/{invoice_id}", headers=headers)
+                self.assertEqual(refunded_balance.json()["outstanding"], "0.00")
+                self.assertEqual(refunded_balance.json()["customer_credit"], "0.00")
+                excessive_refund = await client.post(
+                    "/api/v1/payments/refunds",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "0.01",
+                        "payment_date": date.today().isoformat(),
+                        "source": "invoice_credit",
+                        "invoice_id": invoice_id,
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(excessive_refund.status_code, 409)
+                refund_reversal = await client.post(
+                    f"/api/v1/payments/{refund.json()['id']}/reverse",
+                    headers=headers,
+                )
+                self.assertEqual(refund_reversal.status_code, 200, refund_reversal.text)
+                refund_reversal_balance = await client.get(f"/api/v1/invoices/{invoice_id}", headers=headers)
+                self.assertEqual(refund_reversal_balance.json()["customer_credit"], "20.00")
+
+                advance_receipt = await client.post(
+                    "/api/v1/payments",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "10.00",
+                        "payment_date": date.today().isoformat(),
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(advance_receipt.status_code, 201, advance_receipt.text)
+                self.assertTrue(advance_receipt.json()["is_advance"])
+                advance_refund = await client.post(
+                    "/api/v1/payments/refunds",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "10.00",
+                        "payment_date": date.today().isoformat(),
+                        "source": "advance",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(advance_refund.status_code, 201, advance_refund.text)
+                excess_advance_refund = await client.post(
+                    "/api/v1/payments/refunds",
+                    json={
+                        "customer_id": customer_id,
+                        "method_id": method_id,
+                        "amount": "0.01",
+                        "payment_date": date.today().isoformat(),
+                        "source": "advance",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(excess_advance_refund.status_code, 409)
+
+                competing_invoice_id, competing_invoice = await issue_one()
+                allocation_body = {
+                    "customer_id": customer_id,
+                    "method_id": method_id,
+                    "amount": competing_invoice["grand_total"],
+                    "payment_date": date.today().isoformat(),
+                    "allocations": [{
+                        "invoice_id": competing_invoice_id,
+                        "amount": competing_invoice["grand_total"],
+                    }],
+                }
+                concurrent_payments = await asyncio.gather(*[
+                    client.post("/api/v1/payments", json=allocation_body, headers=headers)
+                    for _ in range(2)
+                ])
+                self.assertEqual(sorted(response.status_code for response in concurrent_payments), [201, 409])
+                with self.factory() as session:
+                    allocated = session.scalar(
+                        select(func.sum(PaymentAllocation.amount))
+                        .join(Payment)
+                        .where(
+                            PaymentAllocation.invoice_id == competing_invoice_id,
+                            Payment.status == "recorded",
+                        )
+                    )
+                    self.assertEqual(Decimal(allocated), Decimal(competing_invoice["grand_total"]))
+
+                    payment_number = f"DBTEST-{suffix}"
+                    bad_payment = Payment(
+                        payment_number=payment_number,
+                        direction="in",
+                        customer_id=customer_id,
+                        method_id=method_id,
+                        amount=Decimal("1.00"),
+                        payment_date=date.today(),
+                        created_by=self.user_id,
+                    )
+                    session.add(bad_payment)
+                    session.flush()
+                    session.add(
+                        PaymentAllocation(
+                            payment_id=bad_payment.id,
+                            invoice_id=competing_invoice_id,
+                            amount=Decimal("2.00"),
+                        )
+                    )
+                    session.flush()
+                    with self.assertRaises(DBAPIError):
+                        session.execute(text("SET CONSTRAINTS alloc_total_ok IMMEDIATE"))
+                    session.rollback()
+
+                ledger = await client.get(f"/api/v1/customers/{customer_id}/ledger", headers=headers)
+                self.assertEqual(ledger.status_code, 200, ledger.text)
+                self.assertGreaterEqual(ledger.json()["total"], 5)
+
+                webhook_secret = "fake-test-signer-secret"
+                self.app.state.settings = self.settings.model_copy(
+                    update={"gateway_webhook_secret": SecretStr(webhook_secret)}
+                )
+                webhook_body = json.dumps({
+                    "customer_id": customer_id,
+                    "method_id": method_id,
+                    "amount": "1.00",
+                    "payment_date": date.today().isoformat(),
+                    "gateway_txn_id": f"GW-{suffix}",
+                }).encode()
+                fake_signature = hmac.new(webhook_secret.encode(), webhook_body, hashlib.sha256).hexdigest()
+                invalid_webhook = await client.post(
+                    "/api/v1/payments/gateway/webhook",
+                    content=webhook_body,
+                    headers={"X-Gateway-Signature": "invalid"},
+                )
+                self.assertEqual(invalid_webhook.status_code, 401)
+                accepted_webhook = await client.post(
+                    "/api/v1/payments/gateway/webhook",
+                    content=webhook_body,
+                    headers={"X-Gateway-Signature": fake_signature, "Content-Type": "application/json"},
+                )
+                self.assertEqual(accepted_webhook.status_code, 201, accepted_webhook.text)
+                self.assertTrue(accepted_webhook.json()["gateway_signature_verified"])
+                duplicate_webhook = await client.post(
+                    "/api/v1/payments/gateway/webhook",
+                    content=webhook_body,
+                    headers={"X-Gateway-Signature": fake_signature, "Content-Type": "application/json"},
+                )
+                self.assertEqual(duplicate_webhook.status_code, 409)
+
+                self.app.state.settings = self.settings
 
         asyncio.run(exercise_api())
 

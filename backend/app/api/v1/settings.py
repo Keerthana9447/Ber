@@ -96,7 +96,7 @@ class SettingsWrite(BaseModel):
         ):
             raise ValueError("GSTIN is invalid or its state prefix does not match state_code")
         try:
-            for marker in ("T", "B"):
+            for marker in ("T", "B", "P", "C"):
                 format_invoice_number(
                     self.invoice_prefix + marker,
                     date(2026, 4, 1),

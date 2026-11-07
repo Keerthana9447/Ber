@@ -13,6 +13,9 @@ import { CustomersPage } from "./pages/CustomersPage";
 import { InvoicesPage } from "./pages/InvoicesPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ProfilePage } from "./pages/ProfilePage";
+import { PaymentsPage } from "./pages/PaymentsPage";
+import { CreditNotesPage } from "./pages/CreditNotesPage";
+import { CustomerLedgerPage } from "./pages/CustomerLedgerPage";
 import { ForbiddenPage, NotFoundPage } from "./pages/Misc";
 
 function RequireAuth() {
@@ -56,6 +59,12 @@ export default function App() {
                     <ProductsPage />
                   ) : m.key === "inventory" ? (
                     <InventoryPage />
+                  ) : m.key === "payments" ? (
+                    <PaymentsPage />
+                  ) : m.key === "credit-notes" ? (
+                    <CreditNotesPage />
+                  ) : m.key === "customer-ledger" ? (
+                    <CustomerLedgerPage />
                   ) : (
                     <ModuleListPage module={m} />
                   )}

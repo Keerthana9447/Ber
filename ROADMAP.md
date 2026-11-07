@@ -34,24 +34,30 @@
 - Make invoice numbering, invoice posting, and stock updates transactional and safe under concurrent requests.
 - Test intra-state/inter-state tax, issuance, cancellation, and inventory effects.
 
-**Status:** Draft CRUD and server-computed previews are implemented. The Phase 3a workflow supports draft -> approved -> issued -> cancelled for tax invoices and bills of supply; proformas remain draft-only and can be copied into a new tax-invoice draft. PostgreSQL lifecycle, concurrency, rollback, integrity, and PDF tests are included. Payments, credit notes, quotations/orders, purchases, and production readiness remain future work.
+**Status:** Phase 3a implements draft -> approved -> issued -> cancelled for tax invoices and bills of supply; proformas remain draft-only and can be copied into a new tax-invoice draft. Phase 3b implements customer receipts/advances, allocation, refunds and reversals, credit notes with optional restock, customer statements, and stored-value PDFs. Evidence: 58 backend tests passed on PostgreSQL, 21 frontend tests passed, TypeScript/build passed, and all eight integrity checks passed. Quotations/orders, purchases, and production readiness remain future work.
 
-## Phase 4 — Payments, expenses, dealer management, and accounting
+## Phase 4 — Quotations, sales orders, challans, and sales returns
 
-- Implement receipts, supplier payments, advances, allocations, outstanding balances, expenses, dealer workflows, balanced journal posting, reversals, and accounting reports.
-- Preserve audit history for posted financial records and test end-to-end workflows.
+- Implement quotation -> sales order -> delivery challan -> invoice conversion, partial delivery, and sales returns.
+- Add sales reports from real data. Challans do not change stock unless separately confirmed.
+- Preserve audit history and validate transitions end-to-end.
 
-## Phase 5 — Reports, notifications, settings, and audit
+## Phase 5 — Purchasing and real costing
 
-- Implement database-backed operational and financial reports with date/business filters and exports.
-- Complete configurable notifications, company/tax settings, and audit coverage for sensitive business operations. Company settings CRUD/readiness and relevant audit logging are implemented.
-- Keep external messaging disabled unless explicitly configured and authorized.
+- Implement suppliers, purchase requests/orders, goods receipts, purchase invoices, supplier payments, and returns.
+- Increase stock only on posted goods receipts. Replace purchase-price COGS snapshots with the confirmed costing method and document its effect on existing records.
+- Add purchase/input-tax registers, valuation reports, and concurrency/valuation tests.
 
-## Phase 6 — Quality, security, performance, deployment, and handover
+## Phase 6 — Expenses, dealers, accounting, reports, and administration
 
-- Complete backend/API, frontend, and critical workflow tests; review authorization and data isolation.
-- Optimize measured bottlenecks, complete deployment and backup guidance, and document setup, migrations, admin creation, and operational procedures.
-- Confirm each acceptance criterion from `BEREV_MASTER_PROMPT.md` with evidence; do not describe unimplemented features as complete.
+- Implement expense approval/posting, dealer portal isolation, full ledgers and accounting reports, persisted notifications, and user/audit administration.
+- Complete report exports and configurable operational settings without inventing company data.
+
+## Phase 7 — Hardening, deployment, and acceptance
+
+- Perform the security, performance, dependency-audit, and data-isolation work; complete deployment, backup/restore, and operational documentation.
+- Run critical Playwright flows against a throwaway stack and map every section 25 acceptance criterion to evidence.
+- Record remaining external requirements; do not describe the app as production-ready.
 
 ## Operating constraints
 

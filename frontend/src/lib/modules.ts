@@ -87,10 +87,20 @@ export const MODULES: ModuleDef[] = [
   { key: "payments", label: "Payments", path: "/payments", endpoint: "/payments", icon: CreditCard, group: "Finance",
     permission: "payments:read", description: "Receipts and supplier payments.",
     columns: [
-      { key: "payment_number", label: "Number" }, { key: "party_name", label: "Party" },
+      { key: "payment_number", label: "Number" }, { key: "customer_name", label: "Customer" },
       { key: "direction", label: "Direction", kind: "badge" }, { key: "payment_date", label: "Date", kind: "date" },
       { key: "method", label: "Method" }, { key: "amount", label: "Amount", kind: "money" },
     ] },
+  { key: "credit-notes", label: "Credit notes", path: "/credit-notes", endpoint: "/credit-notes", icon: FileText, group: "Finance",
+    permission: "sales:read", description: "Issued GST credit notes and sales returns.",
+    columns: [
+      { key: "note_number", label: "Credit note" }, { key: "invoice_id", label: "Invoice" },
+      { key: "note_date", label: "Date", kind: "date" }, { key: "reason", label: "Reason" },
+      { key: "grand_total", label: "Amount", kind: "money" },
+    ] },
+  { key: "customer-ledger", label: "Customer ledger", path: "/customer-ledger", endpoint: "/customers", icon: BookOpen, group: "Finance",
+    permission: "customers:read", description: "Customer invoice, credit-note, receipt and running-balance statement.",
+    columns: [] },
   { key: "expenses", label: "Expenses", path: "/expenses", endpoint: "/expenses", icon: Wallet, group: "Finance",
     permission: "expenses:read", description: "Business expenses and approvals.",
     columns: [

@@ -151,6 +151,13 @@ def post_customer_receipt(d: date, ref: str, amount, method_kind: str, advance=F
                    (ADVANCES if advance else AR, ZERO, amount)])
 
 
+def post_customer_refund(d: date, ref: str, amount, method_kind: str, advance=False) -> JournalEntry:
+    amount = q2(to_decimal(amount, 'amount'))
+    return _entry(d, ref, f"Customer refund {ref}",
+                  [(ADVANCES if advance else AR, amount, ZERO),
+                   (_money_account(method_kind), ZERO, amount)])
+
+
 def post_supplier_payment(d: date, ref: str, amount, method_kind: str) -> JournalEntry:
     amount = q2(to_decimal(amount, 'amount'))
     return _entry(d, ref, f"Supplier payment {ref}",

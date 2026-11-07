@@ -19,7 +19,9 @@ Set-Location backend
 ..\.venv\Scripts\python.exe -m uvicorn app.main:create_app --factory
 ```
 
-The API is versioned under `/api/v1`; `/api/v1/health` is an application-liveness endpoint and does not check database connectivity. Implemented workflows include authentication, dashboard, settings, customers, products/inventory, and invoice drafts through issue/cancel/PDF. Payments, quotations/orders, purchases, credit notes, and production operations are not implemented. The app does not create database tables on startup.
+The API is versioned under `/api/v1`; `/api/v1/health` is an application-liveness endpoint and does not check database connectivity. Implemented workflows include authentication, dashboard, settings, customers, products/inventory, invoice drafts through issue/cancel/PDF, customer receipts and advances, payment allocation/reversal/refunds, credit notes, customer ledger statements, and receipt/credit-note PDFs. Quotations/orders, purchases, expenses, and production operations are not implemented. The app does not create database tables on startup.
+
+Gateway receipts are disabled unless `GATEWAY_WEBHOOK_SECRET` is configured. The webhook verifies an HMAC-SHA256 signature; connect a real payment provider only after confirming its signing format and operational requirements.
 New PostgreSQL connections use a five-second connect timeout. SQLAlchemy operational failures return HTTP 503 with a `Retry-After: 5` header; this does not replace database availability monitoring.
 
 Run the backend tests from `backend`. Database integration tests require `BEREV_TEST_DATABASE_URL` to point to the isolated PostgreSQL test database:
@@ -52,7 +54,7 @@ Alembic is configured in `alembic.ini`. The baseline and invoice-workflow migrat
 
 ## Database verification status
 
-Verified locally on PostgreSQL 16.15: the Alembic baseline and invoice workflow migrations applied, the seed ran idempotently, and live introspection found all 49 mapped tables and their columns. Database-backed auth flows and Phase 2b/3a API, concurrency, rollback, PDF, and integrity tests ran against the isolated test database.
+Verified locally on PostgreSQL 16.15: the Alembic baseline and migrations through `0005_payments_credit_notes` applied, the seed ran idempotently, and live introspection found all mapped tables and columns. Database-backed auth flows and Phase 2b/3a/3b API, concurrency, rollback, payment, refund, credit-note, PDF, and integrity tests ran against the isolated test database.
 
 **Still unverified:** production load/failover behavior, backups/restores, deployment configuration, and GST legal compliance. Consult a qualified Indian tax professional about GST assumptions, invoice numbering, and date rules before live use.
 
