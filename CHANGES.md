@@ -1,15 +1,28 @@
 # Changes
 
+## 2026-11-08 — PostgreSQL migration repair and strict acceptance verification
+
+- Fixed the Alembic root cause: revision `0001_schema_baseline` had read the current `backend/db/schema.sql`, so it created columns and tables that later migrations tried to add again. It now applies a frozen DDL snapshot captured from the original baseline commit (`11d61a7`); revisions `0002`–`0009` apply their own changes in order, without schema-overlap `IF NOT EXISTS` workarounds.
+- Corrected the later migration operations and downgrade paths. Downgrading `0005_payments_credit_notes` now refuses to discard populated snapshot data. Added a strict PostgreSQL test that upgrades a fresh schema, checks Alembic autogenerate against model metadata (tables, columns, nullability, constraints, indexes), checks installed triggers, and downgrades to base and upgrades again.
+- The new comparison found `invoice_items_order_item_ix` was in the migration but missing from the canonical schema/model. Added the index to `backend/db/schema.sql` and regenerated the ORM mapping.
+- Recreated only `berev_dev` and `berev_test`, owned by `berev_app` (`rolsuper=false`, `rolcreatedb=false`). Both migrated to head; `berev_test` completed downgrade to base and upgrade to head. Ran the reference seed on `berev_dev` only.
+- Fixed supplier payment creation to allocate its immutable `SPAY-########` number before insert, using the transactional number sequence. Normalized the receipt storage setting to `Path` for both upload and download. Updated inventory-backed integration scenarios to establish opening valuations through the existing valuation workflow before selling stock; no tests were removed, skipped, or weakened.
+- PostgreSQL 16.15 answered on `127.0.0.1:5432`. The earlier project notes describe prior tests using a local-profile PostgreSQL cluster launched by `pg_ctl`; they do not establish why that cluster stopped. Earlier-phase API coverage was reproduced on fresh databases on the currently responding service.
+- Strict full backend suite against `berev_test`: **75 passed, 0 skipped, 0 errors**. `python -m app.cli verify-integrity` against `berev_test`: PASS for duplicate invoice numbers, numbering series gaps, inventory ledger parity, unbalanced journal entries, trial balance parity, issued invoice totals, issued invoice AR parity, and issued invoices with journal entries.
+- **Still unverified:** manual browser acceptance (including two-dealer URL isolation and purchase receipt/stock/valuation walkthrough), production load/failover, deployment, backup/restore, and qualified GST/accounting review. Phase 7 was not started.
+
+The dated Phase 5/6 entries below record implementation status before this PostgreSQL verification and are superseded where their validation status differs.
+
 ## 2026-11-08 — Phase 5 purchasing workflow implementation
 
 - Added supplier list/create/update endpoints and purchase-request approval/order conversion, with audit events and duplicate-safe document identifiers.
 - Added transactional, partial goods receipts. Stock movements, serial records, warehouse quantity, and weighted-average cost update together only when the GRN commits; order/inventory row locks protect concurrent receipts.
 - Added GRNI journals at receipt and purchase-invoice posting with input GST, AP supplier-ledger attribution, and a purchase-price variance account for invoice/receipt cost differences.
 - Added partial supplier invoices, supplier payments with explicit or oldest-first allocation, supplier ledgers, debit notes/purchase returns, purchase register, input-GST-by-rate summary, and stock valuation report.
-- Added purchase chain/GRN/debit-note schema changes and migration `0008_purchasing_workflows`; made additive Phase 4/5 migrations tolerant of objects present in the canonical baseline.
+- Added purchase chain/GRN/debit-note schema changes and migration `0008_purchasing_workflows`.
 - Added hand-computed GRNI/purchase-price-variance accounting coverage and PostgreSQL-gated workflow coverage for concurrent GRNs, partial receipt/invoicing, duplicate serial rejection, average-cost valuation, and payables settlement.
 - Updated payments list serialization to expose supplier party names and purchase allocations.
-- Validation in this checkout: 65 backend tests pass, 9 PostgreSQL-gated tests are skipped; generated ORM mappings are in sync; Pylance reports no errors in changed Python files. No PostgreSQL test run or browser acceptance was possible.
+- Historical validation at implementation time: 65 backend tests passed and 9 PostgreSQL-gated tests were skipped. The later strict PostgreSQL validation is recorded above.
 - **Still outstanding:** remaining Phase 5 reversals/exports/UI, all listed Phase 6 work, and Phase 7 hardening/deployment/acceptance. This is not a completion claim for Phases 5–7.
 
 ## 2026-11-08 — Phase 6 expense workflow foundation

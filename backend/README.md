@@ -54,13 +54,13 @@ It prompts for email, name, and a password (twice); no default account or passwo
 ..\.venv\Scripts\python.exe scripts\generate_models.py --check
 ```
 
-Alembic is configured in `alembic.ini`. The baseline and invoice-workflow migrations and reference seed have been run against local PostgreSQL 16.15 databases. The first-admin command has not been run.
+Alembic revision `0001_schema_baseline` applies the frozen DDL snapshot in `alembic/versions/0001_schema_baseline.sql`; it does not read the current `db/schema.sql` or live ORM models. Follow-up revisions apply their own changes. The strict migration test upgrades an empty schema, compares the resulting PostgreSQL catalog against ORM metadata, verifies expected triggers, and exercises downgrade to base and upgrade to head. Downgrading revision `0005_payments_credit_notes` is blocked if its added snapshot data is populated.
 
 ## Database verification status
 
-Verified locally on PostgreSQL 16.15: the Alembic baseline and migrations through `0005_payments_credit_notes` applied, the seed ran idempotently, and live introspection found all mapped tables and columns. Database-backed auth flows and Phase 2b/3a/3b API, concurrency, rollback, payment, refund, credit-note, PDF, and integrity tests ran against the isolated test database.
+Verified locally on PostgreSQL 16.15 at `127.0.0.1:5432`: fresh `berev_dev` and `berev_test` databases owned by the non-superuser `berev_app` migrated to head; the reference seed ran on `berev_dev` only. The strict full backend suite passed **75 tests with zero skips or errors** against `berev_test`. All eight `verify-integrity` checks passed. Coverage includes Phase 2b through Phase 6 database-backed workflows, including authentication/lockout, dealer isolation, receipts, purchasing/valuation, and sales documents.
 
-**Still unverified:** current Phase 4/5 schema migrations and APIs against PostgreSQL, manual browser acceptance, production load/failover behavior, backups/restores, deployment configuration, and GST legal compliance. Consult a qualified Indian tax professional about GST assumptions, invoice numbering, and date rules before live use.
+**Still unverified:** manual browser acceptance, production load/failover behavior, backups/restores, deployment configuration, and GST/accounting legal review. Consult a qualified Indian tax professional about GST assumptions, invoice numbering, and date rules before live use.
 
 ## Existing domain modules
 
