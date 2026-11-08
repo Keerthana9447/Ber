@@ -330,6 +330,8 @@ CREATE TABLE invoice_items (
   igst NUMERIC(14,2) NOT NULL DEFAULT 0, cess NUMERIC(14,2) NOT NULL DEFAULT 0,
   unit_cost NUMERIC(14,4));                         -- cost snapshot for COGS
 CREATE INDEX invoice_items_inv_ix ON invoice_items (invoice_id);
+CREATE INDEX invoice_items_order_item_ix ON invoice_items (sales_order_item_id)
+  WHERE sales_order_item_id IS NOT NULL;
 CREATE UNIQUE INDEX invoice_items_inv_serial_uq ON invoice_items (invoice_id, serial_id)
   WHERE serial_id IS NOT NULL;
 

@@ -17,10 +17,10 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE inventory
-          ADD COLUMN IF NOT EXISTS average_unit_cost NUMERIC(14,4)
+          ADD COLUMN average_unit_cost NUMERIC(14,4)
           CHECK (average_unit_cost >= 0);
 
-        CREATE TABLE IF NOT EXISTS inventory_opening_valuations (
+        CREATE TABLE inventory_opening_valuations (
           id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           product_id BIGINT NOT NULL,
           warehouse_id BIGINT NOT NULL,
@@ -34,9 +34,8 @@ def upgrade() -> None:
             REFERENCES inventory(product_id, warehouse_id),
           UNIQUE (journal_entry_id, product_id, warehouse_id)
         );
-        CREATE INDEX IF NOT EXISTS inventory_opening_valuation_time_ix
+        CREATE INDEX inventory_opening_valuation_time_ix
           ON inventory_opening_valuations (created_at DESC);
-        DROP TRIGGER IF EXISTS inventory_opening_valuations_append_only ON inventory_opening_valuations;
         CREATE TRIGGER inventory_opening_valuations_append_only
           BEFORE UPDATE OR DELETE ON inventory_opening_valuations
           FOR EACH ROW EXECUTE FUNCTION forbid_change();

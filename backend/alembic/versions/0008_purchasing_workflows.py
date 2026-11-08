@@ -17,42 +17,32 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE purchase_items
-          ADD COLUMN IF NOT EXISTS source_purchase_item_id BIGINT REFERENCES purchase_items(id),
-          ADD COLUMN IF NOT EXISTS cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
-        CREATE INDEX IF NOT EXISTS purchase_items_source_ix ON purchase_items (source_purchase_item_id)
+          ADD COLUMN source_purchase_item_id BIGINT REFERENCES purchase_items(id),
+          ADD COLUMN cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
+        CREATE INDEX purchase_items_source_ix ON purchase_items (source_purchase_item_id)
           WHERE source_purchase_item_id IS NOT NULL;
 
         ALTER TABLE goods_receipt_items
-          ADD COLUMN IF NOT EXISTS serial_id BIGINT REFERENCES product_serials(id),
-          ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(14,4);
+          ADD COLUMN serial_id BIGINT REFERENCES product_serials(id),
+          ADD COLUMN unit_cost NUMERIC(14,4);
         UPDATE goods_receipt_items gri
            SET unit_cost = ROUND(pi.taxable_value / pi.quantity, 4)
           FROM purchase_items pi
          WHERE pi.id = gri.purchase_item_id AND gri.unit_cost IS NULL;
         ALTER TABLE goods_receipt_items
           ALTER COLUMN unit_cost SET NOT NULL;
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint
-             WHERE conname = 'goods_receipt_items_unit_cost_check'
-               AND conrelid = 'goods_receipt_items'::regclass
-          ) THEN
-            ALTER TABLE goods_receipt_items
-              ADD CONSTRAINT goods_receipt_items_unit_cost_check CHECK (unit_cost >= 0);
-          END IF;
-        END
-        $$;
+        ALTER TABLE goods_receipt_items
+          ADD CONSTRAINT goods_receipt_items_unit_cost_check CHECK (unit_cost >= 0);
         UPDATE purchase_items
            SET cess_rate = CASE
              WHEN taxable_value > 0 THEN ROUND(cess * 100 / taxable_value, 2)
              ELSE 0
            END
          WHERE cess_rate = 0 AND cess > 0;
-        CREATE UNIQUE INDEX IF NOT EXISTS goods_receipt_items_serial_uq
+        CREATE UNIQUE INDEX goods_receipt_items_serial_uq
           ON goods_receipt_items (serial_id) WHERE serial_id IS NOT NULL;
 
-        CREATE TABLE IF NOT EXISTS debit_note_items (
+        CREATE TABLE debit_note_items (
           id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           debit_note_id BIGINT NOT NULL REFERENCES debit_notes(id) ON DELETE CASCADE,
           purchase_item_id BIGINT NOT NULL REFERENCES purchase_items(id),
@@ -66,7 +56,7 @@ def upgrade() -> None:
           warehouse_id BIGINT REFERENCES warehouses(id),
           unit_cost NUMERIC(14,4) NOT NULL CHECK (unit_cost >= 0)
         );
-        CREATE INDEX IF NOT EXISTS debit_note_items_note_ix ON debit_note_items (debit_note_id);
+        CREATE INDEX debit_note_items_note_ix ON debit_note_items (debit_note_id);
 
         INSERT INTO accounts (code, name, type)
         VALUES

@@ -17,10 +17,10 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE expenses
-          ADD COLUMN IF NOT EXISTS cgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS sgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS igst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
-          ADD COLUMN IF NOT EXISTS cess_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+          ADD COLUMN cgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+          ADD COLUMN sgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+          ADD COLUMN igst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+          ADD COLUMN cess_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
         """
     )
 

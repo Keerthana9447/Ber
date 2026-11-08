@@ -54,4 +54,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("The invoice issue migration is irreversible; restore a deliberate database backup.")
+    op.drop_constraint("invoice_items_warehouse_id_fkey", "invoice_items", type_="foreignkey")
+    op.drop_column("invoice_items", "warehouse_id")
+    op.drop_column("invoices", "hsn_summary")
+    for column in (
+        "seller_authorized_signatory",
+        "seller_terms_and_conditions",
+        "seller_upi_id",
+        "seller_bank_ifsc",
+        "seller_bank_account_no",
+        "seller_bank_name",
+        "seller_logo_path",
+        "seller_address",
+        "seller_pan",
+        "seller_trade_name",
+        "seller_legal_name",
+        "customer_name",
+    ):
+        op.drop_column("invoices", column)
+    op.drop_index("invoices_issue_idempotency_uq", table_name="invoices")
+    op.drop_column("invoices", "issue_idempotency_key")
+    op.drop_column("company_settings", "allow_invoice_issue_without_approval")

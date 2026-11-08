@@ -17,17 +17,17 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE quotation_items
-          ADD COLUMN IF NOT EXISTS unit TEXT,
-          ADD COLUMN IF NOT EXISTS cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
+          ADD COLUMN unit TEXT,
+          ADD COLUMN cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
         ALTER TABLE sales_order_items
-          ADD COLUMN IF NOT EXISTS unit TEXT,
-          ADD COLUMN IF NOT EXISTS cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
+          ADD COLUMN unit TEXT,
+          ADD COLUMN cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0;
         ALTER TABLE invoice_items
-          ADD COLUMN IF NOT EXISTS sales_order_item_id BIGINT REFERENCES sales_order_items(id);
-        CREATE INDEX IF NOT EXISTS invoice_items_order_item_ix ON invoice_items (sales_order_item_id)
+          ADD COLUMN sales_order_item_id BIGINT REFERENCES sales_order_items(id);
+        CREATE INDEX invoice_items_order_item_ix ON invoice_items (sales_order_item_id)
           WHERE sales_order_item_id IS NOT NULL;
 
-        CREATE TABLE IF NOT EXISTS delivery_challan_items (
+        CREATE TABLE delivery_challan_items (
           id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           challan_id BIGINT NOT NULL REFERENCES delivery_challans(id) ON DELETE CASCADE,
           sales_order_item_id BIGINT NOT NULL REFERENCES sales_order_items(id),
@@ -36,7 +36,7 @@ def upgrade() -> None:
           quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0),
           UNIQUE (challan_id, serial_id)
         );
-        CREATE INDEX IF NOT EXISTS delivery_challan_items_order_ix ON delivery_challan_items (sales_order_item_id);
+        CREATE INDEX delivery_challan_items_order_ix ON delivery_challan_items (sales_order_item_id);
         """
     )
 

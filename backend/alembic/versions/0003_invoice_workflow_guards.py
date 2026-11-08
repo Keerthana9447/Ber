@@ -14,9 +14,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("DROP INDEX IF EXISTS invoice_items_serial_uq")
+    op.drop_index("invoice_items_serial_uq", table_name="invoice_items")
     op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS invoice_items_inv_serial_uq "
+        "CREATE UNIQUE INDEX invoice_items_inv_serial_uq "
         "ON invoice_items (invoice_id, serial_id) WHERE serial_id IS NOT NULL"
     )
     op.execute(
@@ -51,4 +51,35 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("The invoice workflow guard migration is irreversible.")
+    op.execute(
+        "DROP INDEX invoice_items_inv_serial_uq; "
+        "CREATE UNIQUE INDEX invoice_items_serial_uq ON invoice_items (serial_id) "
+        "WHERE serial_id IS NOT NULL"
+    )
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION invoice_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF TG_OP = 'DELETE' THEN
+            IF OLD.status <> 'draft' THEN RAISE EXCEPTION 'only draft invoices can be deleted'; END IF;
+            RETURN OLD;
+          END IF;
+          IF OLD.status IN ('issued','cancelled') THEN
+            IF (NEW.invoice_number, NEW.customer_id, NEW.invoice_date, NEW.taxable_total, NEW.cgst_total,
+                NEW.sgst_total, NEW.igst_total, NEW.cess_total, NEW.round_off, NEW.grand_total)
+               IS DISTINCT FROM
+               (OLD.invoice_number, OLD.customer_id, OLD.invoice_date, OLD.taxable_total, OLD.cgst_total,
+                OLD.sgst_total, OLD.igst_total, OLD.cess_total, OLD.round_off, OLD.grand_total) THEN
+              RAISE EXCEPTION 'issued invoice % cannot be modified; cancel and re-issue or use a credit note', OLD.invoice_number;
+            END IF;
+            IF OLD.status = 'cancelled' AND NEW.status <> 'cancelled' THEN
+              RAISE EXCEPTION 'cancelled invoices cannot be reopened';
+            END IF;
+            IF OLD.status = 'issued' AND NEW.status NOT IN ('issued','cancelled') THEN
+              RAISE EXCEPTION 'invalid status transition';
+            END IF;
+          END IF;
+          RETURN NEW;
+        END $$;
+        """
+    )

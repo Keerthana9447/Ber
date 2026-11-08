@@ -900,6 +900,7 @@ Index('invoices_cust_ix', Invoice.customer_id, Invoice.invoice_date.desc(), uniq
 Index('invoices_date_ix', Invoice.invoice_date, unique=False)
 Index('invoices_status_ix', Invoice.status, unique=False)
 Index('invoice_items_inv_ix', InvoiceItem.invoice_id, unique=False)
+Index('invoice_items_order_item_ix', InvoiceItem.sales_order_item_id, unique=False, postgresql_where=text('sales_order_item_id IS NOT NULL'))
 Index('invoice_items_inv_serial_uq', InvoiceItem.invoice_id, InvoiceItem.serial_id, unique=True, postgresql_where=text('serial_id IS NOT NULL'))
 Index('debit_note_items_note_ix', DebitNoteItem.debit_note_id, unique=False)
 Index('payments_cust_ix', Payment.customer_id, Payment.payment_date, unique=False)

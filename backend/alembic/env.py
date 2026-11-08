@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -36,9 +37,19 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = create_engine(database_url, poolclass=pool.NullPool, pool_pre_ping=True)
+    external_connection = config.attributes.get("connection")
+    connectable = (
+        external_connection
+        if external_connection is not None
+        else create_engine(database_url, poolclass=pool.NullPool, pool_pre_ping=True)
+    )
     try:
-        with connectable.connect() as connection:
+        connection_context = (
+            nullcontext(connectable)
+            if external_connection is not None
+            else connectable.connect()
+        )
+        with connection_context as connection:
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
@@ -47,7 +58,8 @@ def run_migrations_online() -> None:
             with context.begin_transaction():
                 context.run_migrations()
     finally:
-        connectable.dispose()
+        if external_connection is None:
+            connectable.dispose()
 
 
 if context.is_offline_mode():
