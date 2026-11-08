@@ -40,6 +40,7 @@ DEFAULT_ACCOUNTS = [
     Account("2101", "Output SGST", "liability"),
     Account("2102", "Output IGST", "liability"),
     Account("2103", "Output Cess", "liability"),
+    Account("2104", "Goods Received Not Invoiced", "liability"),
     Account("2200", "Customer Advances", "liability"),
     Account("3000", "Owner's Equity", "equity"),
     Account("4000", "Sales", "income"),
@@ -55,6 +56,7 @@ DEFAULT_ACCOUNTS = [
     Account("5160", "Office Supplies", "expense"),
     Account("5170", "Fuel", "expense"),
     Account("5190", "Other Expenses", "expense"),
+    Account("5191", "Purchase Price Variance", "expense"),
 ]
 _CODES = {a.code for a in DEFAULT_ACCOUNTS}
 CASH, BANK, AR, INVENTORY, AP, ADVANCES = "1000", "1010", "1100", "1200", "2000", "2200"
@@ -136,9 +138,26 @@ def post_credit_note(d: date, ref: str, inv: InvoiceResult, cogs_reversal=ZERO) 
     return entries
 
 
-def post_purchase_invoice(d: date, ref: str, inv: InvoiceResult) -> JournalEntry:
-    raw = [(INVENTORY, inv.taxable_total, ZERO), (AP, ZERO, inv.grand_total)]
+def post_purchase_invoice(
+    d: date,
+    ref: str,
+    inv: InvoiceResult,
+    goods_received_value=None,
+) -> JournalEntry:
+    received_value = (
+        inv.taxable_total
+        if goods_received_value is None
+        else q2(to_decimal(goods_received_value, "goods_received_value"))
+    )
+    if received_value < ZERO:
+        raise AccountingError("goods_received_value must be non-negative")
+    raw = [("2104" if goods_received_value is not None else INVENTORY, received_value, ZERO), (AP, ZERO, inv.grand_total)]
     raw += [(INPUT_TAX[k], v, ZERO) for k, v in _tax_parts(inv).items()]
+    variance = inv.taxable_total - received_value
+    if variance > ZERO:
+        raw.append(("5191", variance, ZERO))
+    elif variance < ZERO:
+        raw.append(("5191", ZERO, -variance))
     ro = inv.round_off
     raw.append((ROUND_OFF, ro if ro > 0 else ZERO, ZERO if ro >= 0 else -ro))
     return _entry(d, ref, f"Purchase invoice {ref}", raw)
@@ -164,12 +183,28 @@ def post_supplier_payment(d: date, ref: str, amount, method_kind: str) -> Journa
                   [(AP, amount, ZERO), (_money_account(method_kind), ZERO, amount)])
 
 
-def post_expense(d: date, ref: str, expense_account: str, amount, method_kind: str) -> JournalEntry:
+def post_expense(
+    d: date,
+    ref: str,
+    expense_account: str,
+    amount,
+    method_kind: str,
+    taxes: dict[str, object] | None = None,
+) -> JournalEntry:
     if not expense_account.startswith("51"):
         raise AccountingError("expense_account must be an expense account (51xx)")
     amount = q2(to_decimal(amount, 'amount'))
-    return _entry(d, ref, f"Expense {ref}",
-                  [(expense_account, amount, ZERO), (_money_account(method_kind), ZERO, amount)])
+    lines = [(expense_account, amount, ZERO)]
+    tax_total = ZERO
+    for kind, account in INPUT_TAX.items():
+        tax_amount = q2(to_decimal((taxes or {}).get(kind, ZERO), f"{kind}_tax"))
+        if tax_amount < ZERO:
+            raise AccountingError("expense taxes must be non-negative")
+        if tax_amount:
+            lines.append((account, tax_amount, ZERO))
+            tax_total += tax_amount
+    lines.append((_money_account(method_kind), ZERO, amount + tax_total))
+    return _entry(d, ref, f"Expense {ref}", lines)
 
 
 def reverse_entry(e: JournalEntry, d: date, reason: str) -> JournalEntry:

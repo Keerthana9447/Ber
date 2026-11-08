@@ -194,3 +194,31 @@ export async function apiBlob(path: string, allowRetry = true): Promise<Blob> {
   }
   return response.blob();
 }
+
+export async function apiUpload(path: string, file: File, allowRetry = true): Promise<unknown> {
+  const headers: Record<string, string> = { Accept: "application/json", "Content-Type": file.type };
+  if (accessToken) headers.Authorization = ["Bearer", accessToken].join(" ");
+  let response: Response;
+  try {
+    response = await fetch(buildUrl(path), { method: "PUT", headers, body: file });
+  } catch {
+    throw new ApiError(0, "Cannot reach the server. Check that the backend is running.");
+  }
+  if (response.status === 401) {
+    if (allowRetry && await refreshSession()) return apiUpload(path, file, false);
+    onUnauthorized?.();
+  }
+  const text = await response.text();
+  let payload: unknown;
+  try {
+    payload = text ? JSON.parse(text) : undefined;
+  } catch {
+    payload = text;
+  }
+  if (!response.ok) {
+    const detail =
+      payload && typeof payload === "object" && "detail" in payload ? (payload as { detail: unknown }).detail : payload;
+    throw new ApiError(response.status, messageFromDetail(detail, `Request failed (${response.status})`), detail);
+  }
+  return payload;
+}

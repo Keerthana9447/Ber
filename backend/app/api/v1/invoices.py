@@ -28,6 +28,7 @@ from starlette.responses import StreamingResponse
 from xml.sax.saxutils import escape
 
 from app.auth.dependencies import get_current_user, require_permissions
+from app.auth.scoping import dealer_customer_scope
 from app.api.v1.payments import invoice_balance
 from app.db.session import get_db
 from app.models import (
@@ -322,7 +323,7 @@ def _normalize_lines(
                 "product_id": product.id if product is not None else None,
                 "serial_id": serial.id if serial is not None else None,
                 "warehouse_id": warehouse_id,
-                "unit_cost": product.purchase_price if product is not None else None,
+                "unit_cost": None,
             }
         )
     return calculated_inputs, details
@@ -578,6 +579,7 @@ def _save_items(session: Session, invoice: Invoice, result: InvoiceResult, detai
                 invoice_id=invoice.id,
                 product_id=detail["product_id"],
                 serial_id=detail["serial_id"],
+                sales_order_item_id=detail.get("sales_order_item_id"),
                 warehouse_id=detail["warehouse_id"],
                 description=calculated.description,
                 hsn_sac=calculated.hsn_sac,
@@ -655,8 +657,7 @@ def list_invoices(
     q: str = Query(default="", max_length=200),
     invoice_status: Literal["draft", "approved", "issued", "cancelled"] | None = Query(default=None, alias="status"),
 ) -> dict[str, object]:
-    del user
-    filters = []
+    filters = [dealer_customer_scope(user, Invoice.customer_id)]
     if invoice_status is not None:
         filters.append(Invoice.status == invoice_status)
     search = q.strip()
@@ -697,8 +698,12 @@ def get_invoice(
     user: Annotated[User, Depends(require_permissions("sales:read"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    del user
-    invoice = session.get(Invoice, invoice_id)
+    invoice = session.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
+    )
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     return _invoice_output(session, invoice)
@@ -1125,6 +1130,24 @@ def issue_invoice(
                     {"product_id": key[0], "product_name": product.name if product else str(key[0]),
                      "warehouse_id": key[1], "required": _text(quantity), "available": _text(available)}
                 )
+        unknown_cost_products = sorted(
+            {
+                product.name
+                for item, product in stock_lines
+                if product is not None
+                and not product.is_service
+                and inventory_by_key[(product.id, item.warehouse_id)].quantity > 0
+                and inventory_by_key[(product.id, item.warehouse_id)].average_unit_cost is None
+            }
+        )
+        if unknown_cost_products:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Opening valuation is required before issuing stock for these products",
+                    "products": unknown_cost_products,
+                },
+            )
         if shortages:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1157,6 +1180,7 @@ def issue_invoice(
             if product is None or product.is_service:
                 continue
             inventory = inventory_by_key[(product.id, item.warehouse_id)]
+            item.unit_cost = inventory.average_unit_cost
             inventory.quantity -= item.quantity
             session.add(
                 StockMovement(
@@ -1178,9 +1202,6 @@ def issue_invoice(
                 serial.status = "sold"
                 serial.updated_at = datetime.now(timezone.utc)
 
-        for item, product in stock_lines:
-            if product is not None:
-                item.unit_cost = product.purchase_price
         session.flush()
 
         invoice.invoice_number = invoice_number
@@ -1421,7 +1442,12 @@ def download_invoice_pdf(
     user: Annotated[User, Depends(require_permissions("sales:read"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> StreamingResponse:
-    invoice = session.get(Invoice, invoice_id)
+    invoice = session.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
+    )
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     if invoice.status not in {"issued", "cancelled"}:

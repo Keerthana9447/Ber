@@ -138,4 +138,50 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("The financial payment and credit-note migration is irreversible.")
+    op.execute(
+        """
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM invoices WHERE seller_state_code IS NOT NULL)
+             OR EXISTS (SELECT 1 FROM credit_notes WHERE hsn_summary IS NOT NULL OR status = 'draft')
+             OR EXISTS (SELECT 1 FROM credit_note_items) THEN
+            RAISE EXCEPTION
+              'Cannot downgrade payments/credit notes: revision 0005 snapshot data would be lost';
+          END IF;
+        END
+        $$;
+        DROP TRIGGER credit_note_total_ok ON credit_notes;
+        DROP TRIGGER credit_note_items_guard ON credit_note_items;
+        DROP TRIGGER credit_notes_guard ON credit_notes;
+        DROP TRIGGER payment_allocations_guard ON payment_allocations;
+        DROP TRIGGER payments_guard ON payments;
+        DROP FUNCTION check_credit_note_total();
+        DROP FUNCTION credit_note_items_guard();
+        DROP FUNCTION credit_note_guard();
+        DROP FUNCTION payment_allocation_guard();
+        DROP FUNCTION payment_guard();
+        DROP INDEX payment_reversal_uq;
+
+        ALTER TABLE invoices DROP COLUMN seller_state_code;
+        ALTER TABLE credit_note_items
+          DROP COLUMN unit_cost,
+          DROP COLUMN warehouse_id,
+          DROP COLUMN serial_id,
+          DROP COLUMN cess,
+          DROP COLUMN igst,
+          DROP COLUMN sgst,
+          DROP COLUMN cgst,
+          DROP COLUMN cess_rate,
+          DROP COLUMN discount,
+          DROP COLUMN gst_rate,
+          DROP COLUMN unit_price,
+          DROP COLUMN unit,
+          DROP COLUMN hsn_sac,
+          DROP COLUMN description;
+        ALTER TABLE credit_notes DROP COLUMN hsn_summary;
+        ALTER TABLE credit_notes ALTER COLUMN status SET DEFAULT 'issued';
+        ALTER TABLE credit_notes DROP CONSTRAINT credit_notes_status_check;
+        ALTER TABLE credit_notes ADD CONSTRAINT credit_notes_status_check
+          CHECK (status IN ('issued','cancelled'));
+        """
+    )

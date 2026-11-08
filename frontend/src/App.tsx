@@ -16,6 +16,9 @@ import { ProfilePage } from "./pages/ProfilePage";
 import { PaymentsPage } from "./pages/PaymentsPage";
 import { CreditNotesPage } from "./pages/CreditNotesPage";
 import { CustomerLedgerPage } from "./pages/CustomerLedgerPage";
+import { SalesFlowPage } from "./pages/SalesFlowPage";
+import { ExpensesPage } from "./pages/ExpensesPage";
+import { DealerPortalPage } from "./pages/DealerPortalPage";
 import { ForbiddenPage, NotFoundPage } from "./pages/Misc";
 
 function RequireAuth() {
@@ -32,6 +35,7 @@ function RequirePermission({ permission, children }: { permission?: string; chil
 }
 
 export default function App() {
+  const { user } = useAuth();
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
@@ -40,9 +44,9 @@ export default function App() {
           <Route
             index
             element={
-              <RequirePermission permission="dashboard:read">
-                <DashboardPage />
-              </RequirePermission>
+              user?.role === "Dealer / Distributor"
+                ? <Navigate to="/products" replace />
+                : <RequirePermission permission="dashboard:read"><DashboardPage /></RequirePermission>
             }
           />
           {MODULES.filter((m) => !m.special).map((m) => (
@@ -53,10 +57,12 @@ export default function App() {
                 <RequirePermission permission={m.permission}>
                   {m.key === "customers" ? (
                     <CustomersPage />
+                  ) : ["quotations", "orders", "delivery-challans", "reports"].includes(m.key) ? (
+                    <SalesFlowPage />
                   ) : m.key === "invoices" ? (
                     <InvoicesPage />
                   ) : m.key === "products" ? (
-                    <ProductsPage />
+                    user?.role === "Dealer / Distributor" ? <DealerPortalPage /> : <ProductsPage />
                   ) : m.key === "inventory" ? (
                     <InventoryPage />
                   ) : m.key === "payments" ? (
@@ -65,6 +71,8 @@ export default function App() {
                     <CreditNotesPage />
                   ) : m.key === "customer-ledger" ? (
                     <CustomerLedgerPage />
+                  ) : m.key === "expenses" ? (
+                    <ExpensesPage />
                   ) : (
                     <ModuleListPage module={m} />
                   )}

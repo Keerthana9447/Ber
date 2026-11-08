@@ -294,8 +294,10 @@ class Inventory(Base):
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('products.id'), nullable=False)
     warehouse_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('warehouses.id'), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False, server_default=text('0'))
+    average_unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(14,4))
     __table_args__ = (
         CheckConstraint(text('quantity >= 0')),
+        CheckConstraint(text('average_unit_cost >= 0')),
         PrimaryKeyConstraint('product_id', 'warehouse_id'),
     )
 
@@ -342,6 +344,7 @@ class PurchaseItem(Base):
     __tablename__ = "purchase_items"
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
     purchase_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('purchases.id', ondelete='CASCADE'), nullable=False)
+    source_purchase_item_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('purchase_items.id'))
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('products.id'), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     hsn_sac: Mapped[str] = mapped_column(Text, nullable=False)
@@ -350,6 +353,7 @@ class PurchaseItem(Base):
     discount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
     taxable_value: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
     gst_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False)
+    cess_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False, server_default=text('0'))
     cgst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
     sgst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
     igst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
@@ -371,17 +375,6 @@ class GoodsReceipt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('now()'))
     __table_args__ = (
         CheckConstraint(text("status IN ('draft','posted','cancelled')")),
-    )
-
-class GoodsReceiptItem(Base):
-    __tablename__ = "goods_receipt_items"
-    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
-    goods_receipt_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('goods_receipts.id', ondelete='CASCADE'), nullable=False)
-    purchase_item_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('purchase_items.id'), nullable=False)
-    quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
-    batch_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('batches.id'))
-    __table_args__ = (
-        CheckConstraint(text('quantity > 0')),
     )
 
 class ProductSerial(Base):
@@ -408,6 +401,20 @@ class ProductSerial(Base):
         CheckConstraint(text('warranty_months >= 0')),
         CheckConstraint(text("status IN ('available','reserved','sold','delivered','returned','under_service','transferred')")),
         CheckConstraint(text('chassis_no IS NOT NULL OR motor_no IS NOT NULL OR battery_serial IS NOT NULL OR vin IS NOT NULL')),
+    )
+
+class GoodsReceiptItem(Base):
+    __tablename__ = "goods_receipt_items"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    goods_receipt_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('goods_receipts.id', ondelete='CASCADE'), nullable=False)
+    purchase_item_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('purchase_items.id'), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
+    batch_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('batches.id'))
+    serial_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('product_serials.id'))
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(14,4), nullable=False)
+    __table_args__ = (
+        CheckConstraint(text('quantity > 0')),
+        CheckConstraint(text('unit_cost >= 0')),
     )
 
 class StockMovement(Base):
@@ -458,11 +465,13 @@ class QuotationItem(Base):
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('products.id'), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     hsn_sac: Mapped[str] = mapped_column(Text, nullable=False)
+    unit: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14,4), nullable=False)
     discount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
     taxable_value: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
     gst_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False)
+    cess_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False, server_default=text('0'))
     __table_args__ = (
         CheckConstraint(text('quantity > 0')),
     )
@@ -494,11 +503,13 @@ class SalesOrderItem(Base):
     product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('products.id'), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     hsn_sac: Mapped[str] = mapped_column(Text, nullable=False)
+    unit: Mapped[str | None] = mapped_column(Text)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14,4), nullable=False)
     discount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
     taxable_value: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
     gst_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False)
+    cess_rate: Mapped[Decimal] = mapped_column(Numeric(5,2), nullable=False, server_default=text('0'))
     __table_args__ = (
         CheckConstraint(text('quantity > 0')),
     )
@@ -514,6 +525,19 @@ class DeliveryChallan(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('now()'))
     __table_args__ = (
         CheckConstraint(text("status IN ('draft','dispatched','delivered','cancelled')")),
+    )
+
+class DeliveryChallanItem(Base):
+    __tablename__ = "delivery_challan_items"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    challan_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('delivery_challans.id', ondelete='CASCADE'), nullable=False)
+    sales_order_item_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('sales_order_items.id'), nullable=False)
+    product_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('products.id'), nullable=False)
+    serial_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('product_serials.id'))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
+    __table_args__ = (
+        CheckConstraint(text('quantity > 0')),
+        UniqueConstraint('challan_id', 'serial_id'),
     )
 
 class Invoice(Base):
@@ -584,6 +608,7 @@ class InvoiceItem(Base):
     invoice_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('invoices.id', ondelete='CASCADE'), nullable=False)
     product_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('products.id'))
     serial_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('product_serials.id'))
+    sales_order_item_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('sales_order_items.id'))
     warehouse_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('warehouses.id'))
     description: Mapped[str] = mapped_column(Text, nullable=False)
     hsn_sac: Mapped[str] = mapped_column(Text, nullable=False)
@@ -675,6 +700,26 @@ class DebitNote(Base):
         CheckConstraint(text("status IN ('issued','cancelled')")),
     )
 
+class DebitNoteItem(Base):
+    __tablename__ = "debit_note_items"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    debit_note_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('debit_notes.id', ondelete='CASCADE'), nullable=False)
+    purchase_item_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('purchase_items.id'), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
+    taxable_value: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
+    cgst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    sgst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    igst: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    cess: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    serial_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('product_serials.id'))
+    warehouse_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('warehouses.id'))
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(14,4), nullable=False)
+    __table_args__ = (
+        CheckConstraint(text('quantity > 0')),
+        CheckConstraint(text('taxable_value >= 0')),
+        CheckConstraint(text('unit_cost >= 0')),
+    )
+
 class Payment(Base):
     __tablename__ = "payments"
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
@@ -733,6 +778,10 @@ class Expense(Base):
     description: Mapped[str | None] = mapped_column(Text)
     amount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
     gst_amount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    cgst_amount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    sgst_amount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    igst_amount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
+    cess_amount: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False, server_default=text('0'))
     vendor: Mapped[str | None] = mapped_column(Text)
     method_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('payment_methods.id'))
     reference_no: Mapped[str | None] = mapped_column(Text)
@@ -783,6 +832,25 @@ class JournalEntryLine(Base):
         CheckConstraint(text('(debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0)')),
     )
 
+class InventoryOpeningValuation(Base):
+    __tablename__ = "inventory_opening_valuations"
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    product_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(14,4), nullable=False)
+    total_value: Mapped[Decimal] = mapped_column(Numeric(14,2), nullable=False)
+    journal_entry_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('journal_entries.id'), nullable=False)
+    created_by: Mapped[int] = mapped_column(BigInteger, ForeignKey('users.id'), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('now()'))
+    __table_args__ = (
+        CheckConstraint(text('quantity > 0')),
+        CheckConstraint(text('unit_cost >= 0')),
+        CheckConstraint(text('total_value >= 0')),
+        ForeignKeyConstraint(['product_id', 'warehouse_id'], ['inventory.product_id', 'inventory.warehouse_id']),
+        UniqueConstraint('journal_entry_id', 'product_id', 'warehouse_id'),
+    )
+
 class Notification(Base):
     __tablename__ = "notifications"
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
@@ -816,20 +884,25 @@ Index('customers_gstin_uq', Customer.gstin, unique=True, postgresql_where=text('
 Index('suppliers_gstin_uq', Supplier.gstin, unique=True, postgresql_where=text('gstin IS NOT NULL AND deleted_at IS NULL'))
 Index('products_name_ix', func.lower(Product.name), unique=False)
 Index('purchases_supplier_inv_uq', Purchase.supplier_id, Purchase.supplier_invoice_no, unique=True, postgresql_where=text("doc_type = 'purchase_invoice' AND supplier_invoice_no IS NOT NULL AND status <> 'cancelled'"))
+Index('purchase_items_source_ix', PurchaseItem.source_purchase_item_id, unique=False, postgresql_where=text('source_purchase_item_id IS NOT NULL'))
 Index('serial_chassis_uq', func.upper(ProductSerial.chassis_no), unique=True, postgresql_where=text('chassis_no IS NOT NULL'))
 Index('serial_vin_uq', func.upper(ProductSerial.vin), unique=True, postgresql_where=text('vin IS NOT NULL'))
 Index('serial_motor_uq', func.upper(ProductSerial.motor_no), unique=True, postgresql_where=text('motor_no IS NOT NULL'))
 Index('serial_battery_uq', func.upper(ProductSerial.battery_serial), unique=True, postgresql_where=text('battery_serial IS NOT NULL'))
 Index('serial_status_ix', ProductSerial.product_id, ProductSerial.status, unique=False)
+Index('goods_receipt_items_serial_uq', GoodsReceiptItem.serial_id, unique=True, postgresql_where=text('serial_id IS NOT NULL'))
 Index('stock_mov_prod_ix', StockMovement.product_id, StockMovement.created_at.desc(), unique=False)
 Index('stock_mov_ref_ix', StockMovement.ref_type, StockMovement.ref_id, unique=False)
+Index('delivery_challan_items_order_ix', DeliveryChallanItem.sales_order_item_id, unique=False)
 Index('invoices_number_uq', Invoice.invoice_number, unique=True, postgresql_where=text('invoice_number IS NOT NULL'))
 Index('invoices_issue_idempotency_uq', Invoice.issue_idempotency_key, unique=True, postgresql_where=text('issue_idempotency_key IS NOT NULL'))
 Index('invoices_cust_ix', Invoice.customer_id, Invoice.invoice_date.desc(), unique=False)
 Index('invoices_date_ix', Invoice.invoice_date, unique=False)
 Index('invoices_status_ix', Invoice.status, unique=False)
 Index('invoice_items_inv_ix', InvoiceItem.invoice_id, unique=False)
+Index('invoice_items_order_item_ix', InvoiceItem.sales_order_item_id, unique=False, postgresql_where=text('sales_order_item_id IS NOT NULL'))
 Index('invoice_items_inv_serial_uq', InvoiceItem.invoice_id, InvoiceItem.serial_id, unique=True, postgresql_where=text('serial_id IS NOT NULL'))
+Index('debit_note_items_note_ix', DebitNoteItem.debit_note_id, unique=False)
 Index('payments_cust_ix', Payment.customer_id, Payment.payment_date, unique=False)
 Index('payments_supp_ix', Payment.supplier_id, Payment.payment_date, unique=False)
 Index('alloc_invoice_ix', PaymentAllocation.invoice_id, unique=False)
@@ -838,6 +911,7 @@ Index('je_date_ix', JournalEntry.entry_date, unique=False)
 Index('je_source_ix', JournalEntry.source_type, JournalEntry.source_id, unique=False)
 Index('jel_acct_ix', JournalEntryLine.account_code, unique=False)
 Index('jel_entry_ix', JournalEntryLine.entry_id, unique=False)
+Index('inventory_opening_valuation_time_ix', InventoryOpeningValuation.created_at.desc(), unique=False)
 Index('notif_user_ix', Notification.user_id, Notification.is_read, Notification.created_at.desc(), unique=False)
 Index('audit_entity_ix', AuditLog.entity_type, AuditLog.entity_id, unique=False)
 Index('audit_time_ix', AuditLog.created_at.desc(), unique=False)

@@ -146,6 +146,7 @@ CREATE TABLE warehouses (
 CREATE TABLE inventory (
   product_id BIGINT NOT NULL REFERENCES products(id), warehouse_id BIGINT NOT NULL REFERENCES warehouses(id),
   quantity NUMERIC(14,3) NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+  average_unit_cost NUMERIC(14,4) CHECK (average_unit_cost >= 0),
   PRIMARY KEY (product_id, warehouse_id));
 CREATE TABLE batches (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -172,23 +173,21 @@ CREATE UNIQUE INDEX purchases_supplier_inv_uq ON purchases (supplier_id, supplie
 CREATE TABLE purchase_items (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   purchase_id BIGINT NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+  source_purchase_item_id BIGINT REFERENCES purchase_items(id),
   product_id BIGINT NOT NULL REFERENCES products(id), description TEXT, hsn_sac TEXT NOT NULL,
   quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0), unit_price NUMERIC(14,4) NOT NULL CHECK (unit_price >= 0),
   discount NUMERIC(14,2) NOT NULL DEFAULT 0, taxable_value NUMERIC(14,2) NOT NULL,
-  gst_rate NUMERIC(5,2) NOT NULL, cgst NUMERIC(14,2) NOT NULL DEFAULT 0, sgst NUMERIC(14,2) NOT NULL DEFAULT 0,
+  gst_rate NUMERIC(5,2) NOT NULL, cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0,
+  cgst NUMERIC(14,2) NOT NULL DEFAULT 0, sgst NUMERIC(14,2) NOT NULL DEFAULT 0,
   igst NUMERIC(14,2) NOT NULL DEFAULT 0, cess NUMERIC(14,2) NOT NULL DEFAULT 0);
+CREATE INDEX purchase_items_source_ix ON purchase_items (source_purchase_item_id)
+  WHERE source_purchase_item_id IS NOT NULL;
 CREATE TABLE goods_receipts (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   grn_number TEXT NOT NULL UNIQUE, purchase_id BIGINT NOT NULL REFERENCES purchases(id),
   warehouse_id BIGINT NOT NULL REFERENCES warehouses(id), received_date DATE NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','posted','cancelled')),
   created_by BIGINT REFERENCES users(id), created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-CREATE TABLE goods_receipt_items (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  goods_receipt_id BIGINT NOT NULL REFERENCES goods_receipts(id) ON DELETE CASCADE,
-  purchase_item_id BIGINT NOT NULL REFERENCES purchase_items(id),
-  quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0), batch_id BIGINT REFERENCES batches(id));
-
 -- EV serial register. Uniqueness enforced only where the identifier exists.
 CREATE TABLE product_serials (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -207,7 +206,16 @@ CREATE UNIQUE INDEX serial_vin_uq ON product_serials (upper(vin)) WHERE vin IS N
 CREATE UNIQUE INDEX serial_motor_uq ON product_serials (upper(motor_no)) WHERE motor_no IS NOT NULL;
 CREATE UNIQUE INDEX serial_battery_uq ON product_serials (upper(battery_serial)) WHERE battery_serial IS NOT NULL;
 CREATE INDEX serial_status_ix ON product_serials (product_id, status);
-
+CREATE TABLE goods_receipt_items (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  goods_receipt_id BIGINT NOT NULL REFERENCES goods_receipts(id) ON DELETE CASCADE,
+  purchase_item_id BIGINT NOT NULL REFERENCES purchase_items(id),
+  quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0),
+  batch_id BIGINT REFERENCES batches(id),
+  serial_id BIGINT REFERENCES product_serials(id),
+  unit_cost NUMERIC(14,4) NOT NULL CHECK (unit_cost >= 0));
+CREATE UNIQUE INDEX goods_receipt_items_serial_uq
+  ON goods_receipt_items (serial_id) WHERE serial_id IS NOT NULL;
 CREATE TABLE stock_movements (   -- append-only ledger; inventory is a cache of its sum
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   product_id BIGINT NOT NULL REFERENCES products(id), warehouse_id BIGINT NOT NULL REFERENCES warehouses(id),
@@ -234,8 +242,10 @@ CREATE TABLE quotation_items (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   quotation_id BIGINT NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
   product_id BIGINT NOT NULL REFERENCES products(id), description TEXT, hsn_sac TEXT NOT NULL,
+  unit TEXT,
   quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0), unit_price NUMERIC(14,4) NOT NULL,
-  discount NUMERIC(14,2) NOT NULL DEFAULT 0, taxable_value NUMERIC(14,2) NOT NULL, gst_rate NUMERIC(5,2) NOT NULL);
+  discount NUMERIC(14,2) NOT NULL DEFAULT 0, taxable_value NUMERIC(14,2) NOT NULL,
+  gst_rate NUMERIC(5,2) NOT NULL, cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0);
 CREATE TABLE sales_orders (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   number TEXT NOT NULL UNIQUE, customer_id BIGINT NOT NULL REFERENCES customers(id),
@@ -250,14 +260,25 @@ CREATE TABLE sales_order_items (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   sales_order_id BIGINT NOT NULL REFERENCES sales_orders(id) ON DELETE CASCADE,
   product_id BIGINT NOT NULL REFERENCES products(id), description TEXT, hsn_sac TEXT NOT NULL,
+  unit TEXT,
   quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0), unit_price NUMERIC(14,4) NOT NULL,
-  discount NUMERIC(14,2) NOT NULL DEFAULT 0, taxable_value NUMERIC(14,2) NOT NULL, gst_rate NUMERIC(5,2) NOT NULL);
+  discount NUMERIC(14,2) NOT NULL DEFAULT 0, taxable_value NUMERIC(14,2) NOT NULL,
+  gst_rate NUMERIC(5,2) NOT NULL, cess_rate NUMERIC(5,2) NOT NULL DEFAULT 0);
 CREATE TABLE delivery_challans (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   number TEXT NOT NULL UNIQUE, sales_order_id BIGINT REFERENCES sales_orders(id),
   customer_id BIGINT NOT NULL REFERENCES customers(id), challan_date DATE NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','dispatched','delivered','cancelled')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE delivery_challan_items (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  challan_id BIGINT NOT NULL REFERENCES delivery_challans(id) ON DELETE CASCADE,
+  sales_order_item_id BIGINT NOT NULL REFERENCES sales_order_items(id),
+  product_id BIGINT NOT NULL REFERENCES products(id),
+  serial_id BIGINT REFERENCES product_serials(id),
+  quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0),
+  UNIQUE (challan_id, serial_id));
+CREATE INDEX delivery_challan_items_order_ix ON delivery_challan_items (sales_order_item_id);
 
 CREATE TABLE invoices (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -299,6 +320,7 @@ CREATE TABLE invoice_items (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   invoice_id BIGINT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
   product_id BIGINT REFERENCES products(id), serial_id BIGINT REFERENCES product_serials(id),
+  sales_order_item_id BIGINT REFERENCES sales_order_items(id),
   warehouse_id BIGINT REFERENCES warehouses(id),
   description TEXT NOT NULL, hsn_sac TEXT NOT NULL, unit TEXT,
   quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0), unit_price NUMERIC(14,4) NOT NULL CHECK (unit_price >= 0),
@@ -308,6 +330,8 @@ CREATE TABLE invoice_items (
   igst NUMERIC(14,2) NOT NULL DEFAULT 0, cess NUMERIC(14,2) NOT NULL DEFAULT 0,
   unit_cost NUMERIC(14,4));                         -- cost snapshot for COGS
 CREATE INDEX invoice_items_inv_ix ON invoice_items (invoice_id);
+CREATE INDEX invoice_items_order_item_ix ON invoice_items (sales_order_item_id)
+  WHERE sales_order_item_id IS NOT NULL;
 CREATE UNIQUE INDEX invoice_items_inv_serial_uq ON invoice_items (invoice_id, serial_id)
   WHERE serial_id IS NOT NULL;
 
@@ -345,6 +369,20 @@ CREATE TABLE debit_notes (
   grand_total NUMERIC(14,2) NOT NULL CHECK (grand_total > 0),
   status TEXT NOT NULL DEFAULT 'issued' CHECK (status IN ('issued','cancelled')),
   created_by BIGINT REFERENCES users(id), created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE debit_note_items (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  debit_note_id BIGINT NOT NULL REFERENCES debit_notes(id) ON DELETE CASCADE,
+  purchase_item_id BIGINT NOT NULL REFERENCES purchase_items(id),
+  quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0),
+  taxable_value NUMERIC(14,2) NOT NULL CHECK (taxable_value >= 0),
+  cgst NUMERIC(14,2) NOT NULL DEFAULT 0,
+  sgst NUMERIC(14,2) NOT NULL DEFAULT 0,
+  igst NUMERIC(14,2) NOT NULL DEFAULT 0,
+  cess NUMERIC(14,2) NOT NULL DEFAULT 0,
+  serial_id BIGINT REFERENCES product_serials(id),
+  warehouse_id BIGINT REFERENCES warehouses(id),
+  unit_cost NUMERIC(14,4) NOT NULL CHECK (unit_cost >= 0));
+CREATE INDEX debit_note_items_note_ix ON debit_note_items (debit_note_id);
 
 -- ============ payments ============
 CREATE TABLE payments (
@@ -385,6 +423,8 @@ CREATE TABLE expenses (
   expense_number TEXT NOT NULL UNIQUE, expense_date DATE NOT NULL,
   category_id BIGINT NOT NULL REFERENCES expense_categories(id), description TEXT,
   amount NUMERIC(14,2) NOT NULL CHECK (amount > 0), gst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+  cgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0, sgst_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+  igst_amount NUMERIC(14,2) NOT NULL DEFAULT 0, cess_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
   vendor TEXT, method_id BIGINT REFERENCES payment_methods(id), reference_no TEXT, attachment_path TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','posted','cancelled')),
   approved_by BIGINT REFERENCES users(id), branch_id BIGINT REFERENCES branches(id),
@@ -414,6 +454,19 @@ CREATE TABLE journal_entry_lines (
 CREATE INDEX jel_acct_ix ON journal_entry_lines (account_code);
 CREATE INDEX jel_entry_ix ON journal_entry_lines (entry_id);
 
+CREATE TABLE inventory_opening_valuations (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  product_id BIGINT NOT NULL, warehouse_id BIGINT NOT NULL,
+  quantity NUMERIC(14,3) NOT NULL CHECK (quantity > 0),
+  unit_cost NUMERIC(14,4) NOT NULL CHECK (unit_cost >= 0),
+  total_value NUMERIC(14,2) NOT NULL CHECK (total_value >= 0),
+  journal_entry_id BIGINT NOT NULL REFERENCES journal_entries(id),
+  created_by BIGINT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (product_id, warehouse_id) REFERENCES inventory(product_id, warehouse_id),
+  UNIQUE (journal_entry_id, product_id, warehouse_id));
+CREATE INDEX inventory_opening_valuation_time_ix ON inventory_opening_valuations (created_at DESC);
+
 -- ============ notifications & audit ============
 CREATE TABLE notifications (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -437,6 +490,7 @@ CREATE TRIGGER je_append_only BEFORE UPDATE OR DELETE ON journal_entries FOR EAC
 CREATE TRIGGER jel_append_only BEFORE UPDATE OR DELETE ON journal_entry_lines FOR EACH ROW EXECUTE FUNCTION forbid_change();
 CREATE TRIGGER audit_append_only BEFORE UPDATE OR DELETE ON audit_logs FOR EACH ROW EXECUTE FUNCTION forbid_change();
 CREATE TRIGGER stock_mov_append_only BEFORE UPDATE OR DELETE ON stock_movements FOR EACH ROW EXECUTE FUNCTION forbid_change();
+CREATE TRIGGER inventory_opening_valuations_append_only BEFORE UPDATE OR DELETE ON inventory_opening_valuations FOR EACH ROW EXECUTE FUNCTION forbid_change();
 CREATE TRIGGER login_audit_append_only BEFORE UPDATE OR DELETE ON login_audit FOR EACH ROW EXECUTE FUNCTION forbid_change();
 
 -- every journal entry must balance at COMMIT time

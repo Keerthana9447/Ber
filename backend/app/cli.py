@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import argparse
 import getpass
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy import text
 
-from app.auth.security import hash_password
+from app.auth.security import hash_password, verify_password
 from app.config import get_settings
 from app.db.session import create_database_engine, create_session_factory
 from app.models import Role, User
 from app.seed import seed_reference_data
+from app.services.inventory_valuation import record_opening_valuation
 
 
 def create_first_admin() -> None:
@@ -51,6 +53,49 @@ def create_first_admin() -> None:
     finally:
         engine.dispose()
     print("First administrator created.")
+
+
+def set_opening_valuation() -> None:
+    email = input("Administrator email: ").strip().casefold()
+    password = getpass.getpass("Administrator password: ")
+    engine = create_database_engine(get_settings())
+    try:
+        factory = create_session_factory(engine)
+        with factory() as session:
+            admin = session.scalar(
+                select(User)
+                .join(Role, Role.id == User.role_id)
+                .where(User.email == email, User.is_active.is_(True), Role.name.in_(("Admin", "Super Admin")))
+            )
+            if admin is None or not verify_password(password, admin.password_hash):
+                raise SystemExit("Administrator authentication failed.")
+            admin_id = admin.id
+
+        print("Enter product ID, warehouse ID, and unit cost for each existing stock balance.")
+        print("Submit a blank product ID when the batch is complete.")
+        rows: list[tuple[int, int, Decimal]] = []
+        while True:
+            product_text = input("Product ID (blank to finish): ").strip()
+            if not product_text:
+                break
+            try:
+                product_id = int(product_text)
+                warehouse_id = int(input("Warehouse ID: ").strip())
+                unit_cost = Decimal(input("Opening unit cost: ").strip())
+            except (ValueError, InvalidOperation):
+                raise SystemExit("Product/warehouse IDs must be integers and unit cost must be a decimal.") from None
+            rows.append((product_id, warehouse_id, unit_cost))
+        if not rows:
+            raise SystemExit("No opening valuation rows were entered.")
+
+        with factory.begin() as session:
+            admin = session.get(User, admin_id)
+            if admin is None or not admin.is_active or admin.role.name not in {"Admin", "Super Admin"}:
+                raise SystemExit("Administrator is no longer active.")
+            result = record_opening_valuation(session, admin, rows, None)
+    finally:
+        engine.dispose()
+    print(f"Opening valuation batch {result['journal_entry_id']} posted; total value {result['total_value']}.")
 
 
 def verify_integrity() -> None:
@@ -146,12 +191,14 @@ def verify_integrity() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="berev-admin")
-    parser.add_argument("command", choices=("create-admin", "verify-integrity"))
+    parser.add_argument("command", choices=("create-admin", "verify-integrity", "set-opening-valuation"))
     args = parser.parse_args()
     if args.command == "create-admin":
         create_first_admin()
     elif args.command == "verify-integrity":
         verify_integrity()
+    elif args.command == "set-opening-valuation":
+        set_opening_valuation()
 
 
 if __name__ == "__main__":

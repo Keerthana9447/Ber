@@ -1,12 +1,21 @@
 # Known Gaps
 
-This list reflects the implementation after Phase 3b. **UNVERIFIED** means no real PostgreSQL run has confirmed the behavior.
+This list reflects the current Phase 5/6 implementation state. **UNVERIFIED** means no real PostgreSQL run has confirmed the behavior.
 
 ## Database verification
 
+- **CURRENT STATUS — VERIFIED 2026-11-08:** PostgreSQL 16.15 answered on `127.0.0.1:5432`. Fresh `berev_dev` and `berev_test` databases are owned by the non-superuser `berev_app`; both reached Alembic head. The strict backend suite passed **75 tests, 0 skipped, 0 errors** against `berev_test`, and all eight integrity checks passed. `git ls-files .env` printed nothing. Database tests resolve only `BEREV_TEST_DATABASE_URL` or `TEST_DATABASE_URL`, reject any database name other than `berev_test`, and do not fall back to `DATABASE_URL`.
+- **Required CI gate:** set `REQUIRE_DB_TESTS=1`, configure the test database URL, and run `python -m pytest backend\tests -q`. Missing database configuration or availability must fail rather than skip integration tests; acceptance requires zero skips. See `backend/README.md`.
+- **Phase 5 purchasing implementation — VERIFIED by the strict PostgreSQL suite:** supplier and purchase workflows, partial/concurrent GRNs, serial registration, weighted-average updates, GRNI accounting, supplier invoices/payments, debit notes/returns, supplier ledger, reports, and stock valuation are exercised. Professional accounting review remains outstanding.
+- **Phase 6 expense implementation — VERIFIED by the strict PostgreSQL suite:** submission/approval, journal posting, input-GST accounts, receipt validation/upload/download, and size limits are covered. Browser walkthrough remains outstanding.
+- **Phase 6 accounting reports — PARTIALLY VERIFIED:** PostgreSQL-backed trial balance and profit-and-loss routes are covered by the backend suite. Customer/supplier aging, exports, branch-scoping completeness, and full ledger/report UI remain incomplete or unverified.
+- **Phase 6 dealer portal/isolation — VERIFIED by the PostgreSQL cross-dealer test:** one dealer cannot list or access another dealer's records by guessed URL. Manual browser acceptance with two dealer users remains outstanding.
+- **Costing/accounting limitation:** GRNs debit Inventory and credit Goods Received Not Invoiced (2104); purchase invoices clear GRNI, recognize input GST/AP, and post purchase-price variance to 5191. Automated PostgreSQL coverage passes, but the policy still requires professional accounting review before operational use.
+- **Migration baseline — VERIFIED:** revision 0001 now uses frozen DDL captured from the original baseline commit, rather than the live SQLAlchemy models or current `schema.sql`. Later migrations apply only their own changes. The strict migration test upgrades an empty schema, compares tables/columns/nullability/constraints/indexes against model metadata, checks installed triggers, and exercises downgrade to base and upgrade to head. Downgrade `0005` explicitly refuses to drop its snapshot data when populated; later downgrades that remove additive fields should only be used with an appropriate backup.
+- **Still not implemented:** Phase 5 purchase cancellation/reversal workflows and return reversal, exports for purchase reports, and visual purchasing screens. Phase 6 dealer order creation, full accounting/reporting and exports, persisted notification scheduler/SMTP, user/password-reset/audit administration, and complete settings screens remain outstanding. Phase 7 hardening, performance, dependency audits, production deployment/backup restore, Playwright acceptance, and the final acceptance matrix also remain outstanding.
 - **VERIFIED locally — `backend/db/schema.sql`:** the Alembic baseline applied successfully to fresh `berev_dev` and `berev_test` databases on PostgreSQL 16.15.
-- **VERIFIED locally — SQLAlchemy models vs schema:** live catalog introspection found all 49 mapped tables and their mapped columns.
-- **VERIFIED locally — seed script:** the reference seed ran twice without duplicate rows.
+- **VERIFIED locally — SQLAlchemy models vs migrated schema:** Alembic autogenerate reported no schema differences after a fresh migration, including tables, columns, nullability, constraints, and indexes; expected non-internal triggers were also present and enabled.
+- **VERIFIED locally — seed script:** the reference seed ran on `berev_dev`; the strict test suite seeds its test fixtures on `berev_test`.
 - **VERIFIED locally — auth smoke test:** login, profile, refresh rotation, logout, and refresh-token revocation worked against PostgreSQL.
 - **VERIFIED locally — Phase 2b/3a PostgreSQL API integration:** settings, customers, invoice drafts/previews, approval, issue/cancel, proforma conversion and restrictions, PDF generation, permissions, invoice triggers, stock/serial restoration, accounting postings/reversals, rollback, and audit behavior are covered by the isolated PostgreSQL test suite.
 - **VERIFIED locally — Phase 3b PostgreSQL API integration:** receipt and advance posting, partial/full allocation, concurrent over-allocation rejection, payment reversals, credit-note computation/restock/PDF, invoice-credit and advance refunds with over-refund rejection, refund reversals, signed gateway test webhook, customer ledger pagination/running balances, and authorization are exercised against the isolated PostgreSQL test database.
@@ -15,26 +24,40 @@ This list reflects the implementation after Phase 3b. **UNVERIFIED** means no re
 - **VERIFIED locally — PostgreSQL concurrency:** the test suite issues 20 drafts concurrently with unique contiguous numbers, issues one draft from five concurrent requests with exactly one success, and checks contention for the last stock unit.
 - **VERIFIED locally — integrity command:** `python -m app.cli verify-integrity` passed all checks on the isolated PostgreSQL test database after cleanup of legacy malformed test fixtures.
 - **VERIFIED locally — Phase 3b schema:** migration `0005_payments_credit_notes` and the generated ORM mappings were applied/checked against the isolated PostgreSQL test database.
+- **VERIFIED locally — Phase 4 sales documents:** migration `0006_sales_document_chain`, quotation/order/challan workflows, order-to-invoice conversion, and sales reports pass the strict PostgreSQL suite.
+- **VERIFIED locally — Phase 5 weighted-average costing:** migrations `0007_weighted_average_cost` and `0008_purchasing_workflows`, opening valuation, purchase receipt costing, and invoice COGS pass the strict PostgreSQL suite.
 - **UNVERIFIED — production operations:** load/failover behavior, backups/restores, and deployment configuration have not been exercised.
 
-These results apply only to the local isolated PostgreSQL test database; they do not establish production readiness.
+These results apply only to the isolated local PostgreSQL 16.15 service and `berev_test`; they do not establish production readiness. Earlier PostgreSQL runs used a local-profile cluster launched with `pg_ctl`; project records do not establish why that cluster stopped. The current service-backed run reproduces the backend acceptance results on fresh databases. Manual browser acceptance, production operations, and legal/accounting review remain outstanding.
+
+## Security testing not completed
+
+- Dealer isolation has a passing PostgreSQL-backed cross-dealer test; the manual two-user browser acceptance remains outstanding.
+- Receipt upload coverage for invalid signatures, valid PDF upload/download, and the 5 MB limit passes on PostgreSQL; browser walkthrough remains outstanding.
+- Account lockout behavior passes its database-backed login test. A general request/IP rate limiter is not implemented or tested.
+- Refresh-token rotation and logout/revocation pass their PostgreSQL-backed API test.
+- No complete security test campaign has been performed. CORS, security headers, log redaction, dependency audits, SQL injection/XSS testing, and production threat review remain outstanding.
 
 ## Application foundation
 
 - The FastAPI app factory, environment-backed settings, JSON logging, versioned router, and liveness endpoint are implemented. The health endpoint does not test the database.
 - Auth code includes Argon2 hashing, signed access/refresh JWTs, refresh-token fingerprints, login lockout logic, RBAC dependencies, and an interactive first-admin CLI. Basic database-backed auth flows passed a local PostgreSQL smoke test; first-admin creation and production authorization/data-isolation testing remain unverified.
-- The schema-derived SQLAlchemy mappings are generated by `backend/scripts/generate_models.py`. `backend/tests/test_models_source.py` checks deterministic generation and table count, not live-database compatibility.
-- The seed script uses `STATE_CODES` and `DEFAULT_ACCOUNTS` plus reference units, payment methods, permissions, and roles. It ran against the local development and test databases.
+- The schema-derived SQLAlchemy mappings are generated by `backend/scripts/generate_models.py`. Source-generation tests and the strict migration autogenerate comparison now check generated metadata and live PostgreSQL compatibility.
+- The seed script uses `STATE_CODES` and `DEFAULT_ACCOUNTS` plus reference units, payment methods, permissions, and roles. It ran against `berev_dev`; the test suite creates reference fixtures independently on `berev_test`.
 
 ## Remaining product scope
 
 - The frontend now has editable company settings and customer workflows, a draft invoice editor using server preview totals, and a lazy-loaded dashboard chart area. Browser-based manual acceptance has not been performed.
 - The Phase 3a invoice workflow supports approval, issue, cancel, numbering, stock/accounting posting, reversals, proforma conversion, and PDF downloads. Phase 3b adds receipts/advances, allocation, refunds/reversals, credit notes, customer statements, and receipt/credit-note PDFs. Drafts validate serialized products but do not reserve serials or update stock.
+- Phase 4 adds quotation -> order -> delivery-challan -> delivered-quantity invoice-draft workflows, sales reports, and quotation/order PDFs. PostgreSQL integration passes; sales returns are not implemented, challans do not change stock, and manual browser acceptance remains outstanding.
 - **Customer opening balance semantics unresolved:** the customer master has a signed `opening_balance` value but no debit/credit direction field. Customer statements currently derive opening balances from earlier recorded transactions and do not include that master value until its accounting sign semantics are specified.
 - **Gateway limitation:** the webhook is off unless `GATEWAY_WEBHOOK_SECRET` is configured and uses HMAC-SHA256 verification. No real payment provider has been connected or tested.
 - Payment and credit-note history screens are paginated. Customer/invoice selectors currently load at most the first 100 matching rows; large datasets need searchable/paginated selectors.
 - Manual browser acceptance of receipts, refunds, credit notes, customer statements, invoice balances, and PDFs has not been performed.
-- **Costing limitation:** issue-time COGS uses the product's current `purchase_price` snapshot. Proper costing (weighted average or FIFO from purchase records) depends on the future purchase module.
+- **Costing policy:** perpetual weighted-average unit cost is tracked per product and warehouse. Recoverable input GST is excluded from inventory cost; an issued invoice snapshots the warehouse average into its invoice line and uses that amount for COGS. Sales leave the average cost unchanged; each receipt will recalculate it from pre-receipt quantity/value and received quantity/value.
+- **GRNI policy:** a posted GRN records inventory and a matching GRNI liability; the supplier invoice clears GRNI and recognizes input GST/AP. Difference between received cost and supplier-invoice taxable value posts to Purchase Price Variance (5191), keeping the inventory ledger aligned with the warehouse weighted average.
+- **Legacy inventory opening valuation:** existing positive balances have no authoritative warehouse-level cost. The migration deliberately leaves their new average cost `NULL`; it does not derive costs from `purchase_price` or silently assign zero. An Admin/Super Admin must enter verified costs in the Stock screen or `python -m app.cli set-opening-valuation`. Each submitted batch records immutable product/warehouse quantities and costs, one balanced journal entry (debit Inventory 1200, credit Owner's Equity 3000), and an audit event. A correction is a linked reversal, not an edit; reversal is blocked after subsequent stock movements because the original balance can no longer be unwound safely. Invoices consuming unvalued positive stock fail with HTTP 409 and identify affected products. Zero-quantity balances are not part of opening valuation.
+- **Existing-data effect:** historical invoice COGS snapshots and journal entries are not rewritten. Newly issued invoices use weighted-average costs only; legacy on-hand balances remain blocked from sale until explicitly valued. Opening valuation changes the Inventory and Owner's Equity balances by the manually entered value; reconcile the opening quantities and costs before enabling live use.
 - **Tax-professional confirmation required:** the current conservative date rule rejects invoices outside the current financial year and prevents earlier dates within a series unless the user has `sales:backdate`. Confirm this rule before live use.
 - **Tax-professional confirmation required:** printed tax-invoice and bill-of-supply numbers append `T` and `B`, respectively, to the configured prefix so their display numbers remain distinct while using separate numbering series.
 - **Not handled:** e-invoice (IRN) cancellation windows and GST return implications.

@@ -1,7 +1,7 @@
 import unittest
 import re
 
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
 from sqlalchemy.orm import configure_mappers
 
 from app.models import Base
@@ -20,7 +20,8 @@ class GeneratedModelTests(unittest.TestCase):
         self.assertEqual(OUTPUT.read_text(encoding="utf-8"), build())
 
     def test_all_schema_tables_are_mapped(self):
-        self.assertEqual(len(Base.metadata.tables), 49)
+        source = re.sub(r"--[^\r\n]*", "", (OUTPUT.parents[1] / "db" / "schema.sql").read_text(encoding="utf-8"))
+        self.assertEqual(len(Base.metadata.tables), len(list(TABLE_START.finditer(source))))
         self.assertIn("users", Base.metadata.tables)
         self.assertIn("audit_logs", Base.metadata.tables)
 
@@ -60,7 +61,8 @@ class GeneratedModelTests(unittest.TestCase):
             for constraint in table.constraints
         )
         actual_foreign_keys = sum(
-            len(table.foreign_keys) for table in Base.metadata.tables.values()
+            sum(isinstance(constraint, ForeignKeyConstraint) for constraint in table.constraints)
+            for table in Base.metadata.tables.values()
         )
         self.assertEqual(actual_checks, expected_checks)
         self.assertEqual(actual_unique, expected_unique)
