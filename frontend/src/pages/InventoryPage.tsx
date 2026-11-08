@@ -31,12 +31,21 @@ type InventoryRow = {
 type InventoryPageData = { items: InventoryRow[]; total: number };
 type ProductPageData = { items: Product[]; total: number };
 type ProductOptions = { warehouses: Warehouse[] };
+type UnvaluedInventory = {
+  product_id: number;
+  product_name: string;
+  sku: string;
+  warehouse_id: number;
+  warehouse_name: string;
+  quantity: string;
+};
 
 export function InventoryPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const canManage = can("inventory:manage");
+  const isAdmin = user?.role === "Admin" || user?.role === "Super Admin";
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [queryText, setQueryText] = useState("");
@@ -44,6 +53,8 @@ export function InventoryPage() {
   const [adjustmentOpen, setAdjustmentOpen] = useState(false);
   const [warehouseOpen, setWarehouseOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
+  const [openingValuationOpen, setOpeningValuationOpen] = useState(false);
+  const [openingCosts, setOpeningCosts] = useState<Record<string, string>>({});
 
   const options = useQuery({
     queryKey: ["product-options"],
@@ -68,6 +79,28 @@ export function InventoryPage() {
       }),
     placeholderData: keepPreviousData,
     retry: false,
+  });
+
+  const unvaluedInventory = useQuery({
+    queryKey: ["inventory", "opening-valuations"],
+    queryFn: ({ signal }) => api<{ items: UnvaluedInventory[] }>("/inventory/opening-valuations", { signal }),
+    enabled: openingValuationOpen && isAdmin,
+    retry: false,
+  });
+
+  const postOpeningValuation = useMutation({
+    mutationFn: (lines: { product_id: number; warehouse_id: number; unit_cost: string }[]) =>
+      api<{ total_value: string }>("/inventory/opening-valuations", { method: "POST", body: { lines } }),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["inventory", "list"] }),
+        queryClient.invalidateQueries({ queryKey: ["inventory", "opening-valuations"] }),
+      ]);
+      setOpeningCosts({});
+      setOpeningValuationOpen(false);
+      toast("success", `Opening valuation posted (${result.total_value}).`);
+    },
+    onError: (error) => toast("error", error instanceof Error ? error.message : "Could not post opening valuation."),
   });
 
   const products = useQuery({
@@ -163,6 +196,7 @@ export function InventoryPage() {
             <>
               <Button variant="secondary" onClick={() => setWarehouseOpen(true)}><Plus className="h-4 w-4" aria-hidden /> Add warehouse</Button>
               <Button onClick={() => setAdjustmentOpen(true)}><Plus className="h-4 w-4" aria-hidden /> Adjust stock</Button>
+              {isAdmin && <Button variant="secondary" onClick={() => setOpeningValuationOpen(true)}>Opening valuation</Button>}
             </>
           )}
         </div>
@@ -266,6 +300,64 @@ export function InventoryPage() {
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={() => setWarehouseOpen(false)} disabled={createWarehouse.isPending}>Cancel</Button>
             <Button type="submit" loading={createWarehouse.isPending}>Create warehouse</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={openingValuationOpen && isAdmin} onClose={() => { if (!postOpeningValuation.isPending) setOpeningValuationOpen(false); }} title="Opening valuation">
+        <form
+          className="max-h-[76vh] space-y-4 overflow-y-auto p-6"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const lines = (unvaluedInventory.data?.items ?? [])
+              .filter((row) => openingCosts[`${row.product_id}:${row.warehouse_id}`])
+              .map((row) => ({
+                product_id: row.product_id,
+                warehouse_id: row.warehouse_id,
+                unit_cost: openingCosts[`${row.product_id}:${row.warehouse_id}`],
+              }));
+            if (lines.length) postOpeningValuation.mutate(lines);
+          }}
+        >
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Opening stock valuation</h2>
+            <p className="text-sm text-slate-600">
+              Enter the verified unit cost for each existing stock balance. One Inventory / Owner’s Equity journal entry is posted for this batch. Corrections require a reversal.
+            </p>
+          </div>
+          {unvaluedInventory.isLoading && <LoadingState />}
+          {unvaluedInventory.isError && <ErrorState message={(unvaluedInventory.error as Error).message} onRetry={() => unvaluedInventory.refetch()} />}
+          {unvaluedInventory.isSuccess && unvaluedInventory.data.items.length === 0 && <EmptyState title="No unvalued on-hand stock" />}
+          {unvaluedInventory.data?.items.map((row) => {
+            const key = `${row.product_id}:${row.warehouse_id}`;
+            return (
+              <label key={key} className="grid gap-2 text-sm sm:grid-cols-[1fr_9rem]">
+                <span>
+                  {row.sku} · {row.product_name}
+                  <span className="block text-xs text-slate-500">{row.warehouse_name} · {formatCount(row.quantity)} on hand</span>
+                </span>
+                <input
+                  type="number"
+                  min="0.0001"
+                  step="0.0001"
+                  required
+                  aria-label={`Unit cost for ${row.product_name} at ${row.warehouse_name}`}
+                  value={openingCosts[key] ?? ""}
+                  onChange={(event) => setOpeningCosts((current) => ({ ...current, [key]: event.target.value }))}
+                  className="rounded-lg border border-ivory-300 px-3 py-2"
+                />
+              </label>
+            );
+          })}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setOpeningValuationOpen(false)} disabled={postOpeningValuation.isPending}>Cancel</Button>
+            <Button
+              type="submit"
+              loading={postOpeningValuation.isPending}
+              disabled={!unvaluedInventory.data?.items.some((row) => openingCosts[`${row.product_id}:${row.warehouse_id}`])}
+            >
+              Post batch
+            </Button>
           </div>
         </form>
       </Modal>

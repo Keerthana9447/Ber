@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_permissions
+from app.auth.scoping import dealer_customer_scope
 from app.db.session import get_db
 from app.models import AuditLog, Branch, Customer, State, User
 from berev_core.gst import is_valid_gstin
@@ -129,7 +130,7 @@ def _visible_to(user: User):
         if user.branch_id is None:
             return Customer.id == -1
         return Customer.branch_id == user.branch_id
-    return Customer.id.is_not(None)
+    return dealer_customer_scope(user, Customer.id)
 
 
 def _snapshot(customer: Customer) -> dict[str, object]:

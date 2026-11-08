@@ -106,6 +106,46 @@ allocations and issued credit/debit notes.
 - Gateway receipts are disabled unless `GATEWAY_WEBHOOK_SECRET` is configured; the webhook requires a valid
   HMAC-SHA256 signature.
 
+## Purchasing and expenses
+
+- `GET/POST/PUT /suppliers` manage active supplier masters (`suppliers:read`, `suppliers:create`, `suppliers:update`).
+- `POST /purchases/requests` creates a GST-calculated supplier purchase request; `POST /purchases/{id}/approve` and
+  `POST /purchases/{id}/convert-to-order` progress an approved request to a purchase order (`purchases:manage`).
+- `POST /purchases/{id}/goods-receipts` posts a partial or complete GRN to an active warehouse. Only a committed GRN
+  increases stock. Serialized products require one unique chassis/VIN/motor/battery serial record per received unit.
+  Weighted-average costs update in the same transaction. GRNs debit Inventory and credit GRNI.
+- `POST /purchases/{order_id}/invoices` posts a supplier invoice for received, uninvoiced quantities, clears GRNI,
+  recognizes input GST and AP, and books cost differences to account 5191. Supplier invoice numbers are unique per supplier.
+- `POST /purchases/{invoice_id}/debit-notes` records a stock return, reverses input GST and supplier payable, and removes
+  inventory at its moving-average cost. `POST /supplier-payments` allocates a supplier payment to posted invoices;
+  `GET /suppliers/{id}/ledger` returns the supplier journal ledger.
+- `GET /reports/purchase-register`, `/reports/input-gst`, and `/reports/stock-valuation` are permission-checked real-data reports.
+- Expenses use `GET /expense-categories`, `GET/POST /expenses`, `POST /expenses/{id}/approve|reject|post`, and
+  `PUT/GET /expenses/{id}/receipt`. Expense amount is the taxable base; input CGST/SGST/IGST/cess are entered separately
+  and posted to input-tax accounts. Receipts accept PDF/JPEG/PNG/WebP up to 5 MB and are stored outside the web root under
+  `EXPENSE_UPLOAD_DIR`; the original filename is not stored. Posting requires an approved expense, active configured expense
+  category and payment method, and `accounting:post`.
+
+## Accounting reports
+
+- `GET /accounting/journal-entries?page=1&page_size=20&from=YYYY-MM-DD&to=YYYY-MM-DD` lists persisted journal entries
+  and their database debit/credit totals (`accounting:read`).
+- `GET /accounting/trial-balance?from=...&to=...` returns posted journal debit/credit balances by account and a
+  balanced-total indicator.
+- `GET /accounting/profit-and-loss?from=...&to=...` derives revenue, COGS, expenses, gross profit, and net profit
+  before income tax from journal lines and labels the result accordingly.
+- `GET /accounting/cash-book` and `/accounting/bank-book` return journal-derived activity with opening and closing
+  running balances. All date ranges are inclusive and limited to 366 days.
+
+## Dealer portal
+
+- Dealer accounts are linked to a single active dealer record through `users.dealer_id`. Sales document, invoice,
+  payment, credit-note, customer, and ledger reads apply a database query predicate for that dealer's customer;
+  inaccessible IDs return 404 rather than exposing another dealer's documents.
+- `GET /dealer/portal/profile` returns only the authenticated dealer's profile.
+- `GET /dealer/portal/products?page=1&page_size=20&q=<search>` returns active products and that dealer's configured
+  price (falling back to the product selling price when no dealer override exists). It does not expose inventory costs.
+
 ## Other
 - `GET /notifications?page_size=10` -> `{ "items": [{ "id", "title", "body", "is_read" }] }`
 - `GET /settings` -> flat object of company settings (scalars are shown read-only).

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from berev_core.accounting import DEFAULT_ACCOUNTS
 from berev_core.gst import STATE_CODES
-from app.models import LedgerAccount, Permission, PaymentMethod, Role, State, Unit
+from app.models import ExpenseCategory, LedgerAccount, Permission, PaymentMethod, Role, State, Unit
 
 logger = logging.getLogger("berev.seed")
 
@@ -33,6 +33,18 @@ PAYMENT_METHODS = (
     ("cheque", "Cheque", "bank"),
     ("card", "Card", "bank"),
     ("other", "Other", "bank"),
+)
+
+EXPENSE_CATEGORIES = (
+    ("Rent", "5100"),
+    ("Salaries", "5110"),
+    ("Electricity", "5120"),
+    ("Transportation", "5130"),
+    ("Marketing", "5140"),
+    ("Maintenance", "5150"),
+    ("Office Supplies", "5160"),
+    ("Fuel", "5170"),
+    ("Other Expenses", "5190"),
 )
 
 PERMISSION_DESCRIPTIONS = {
@@ -152,6 +164,11 @@ def seed_reference_data(session: Session) -> None:
             {"code": account.code, "name": account.name, "type": account.type},
         )
 
+    for name, account_code in EXPENSE_CATEGORIES:
+        category = session.scalar(select(ExpenseCategory).where(ExpenseCategory.name == name))
+        if category is None:
+            session.add(ExpenseCategory(name=name, account_code=account_code))
+
     permission_rows: dict[str, Permission] = {}
     for code, description in PERMISSION_DESCRIPTIONS.items():
         permission = session.scalar(select(Permission).where(Permission.code == code))
@@ -183,6 +200,7 @@ def seed_reference_data(session: Session) -> None:
             "states": len(STATE_CODES),
             "units": len(UNITS),
             "payment_methods": len(PAYMENT_METHODS),
+            "expense_categories": len(EXPENSE_CATEGORIES),
             "accounts": len(DEFAULT_ACCOUNTS),
             "roles": len(ROLE_PERMISSIONS),
             "permissions": len(PERMISSION_DESCRIPTIONS),

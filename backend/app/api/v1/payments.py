@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
 from app.auth.dependencies import require_permissions
+from app.auth.scoping import dealer_customer_scope
 from app.db.session import get_db
 from app.models import (
     AuditLog,
@@ -41,6 +42,7 @@ from app.models import (
     Product,
     ProductSerial,
     StockMovement,
+    Supplier,
     User,
 )
 from berev_core.accounting import (
@@ -386,6 +388,7 @@ def _record_receipt(
 
 def _payment_output(session: Session, payment: Payment) -> dict[str, object]:
     customer = session.get(Customer, payment.customer_id) if payment.customer_id else None
+    supplier = session.get(Supplier, payment.supplier_id) if payment.supplier_id else None
     method = session.get(PaymentMethod, payment.method_id)
     allocations = session.scalars(
         select(PaymentAllocation).where(PaymentAllocation.payment_id == payment.id).order_by(PaymentAllocation.id)
@@ -396,6 +399,9 @@ def _payment_output(session: Session, payment: Payment) -> dict[str, object]:
         "direction": payment.direction,
         "customer_id": payment.customer_id,
         "customer_name": customer.name if customer else None,
+        "supplier_id": payment.supplier_id,
+        "supplier_name": supplier.name if supplier else None,
+        "party_name": customer.name if customer else supplier.name if supplier else None,
         "method_id": payment.method_id,
         "method": method.name if method else None,
         "amount": _text(payment.amount),
@@ -409,6 +415,10 @@ def _payment_output(session: Session, payment: Payment) -> dict[str, object]:
             {"invoice_id": item.invoice_id, "amount": _text(item.amount)}
             for item in allocations
             if item.invoice_id is not None
+        ] + [
+            {"purchase_id": item.purchase_id, "amount": _text(item.amount)}
+            for item in allocations
+            if item.purchase_id is not None
         ],
     }
 
@@ -428,13 +438,13 @@ def payment_methods(
 
 @router.get("/payments")
 def list_payments(
-    _: Annotated[User, Depends(require_permissions("payments:read"))],
+    user: Annotated[User, Depends(require_permissions("payments:read"))],
     session: Annotated[Session, Depends(get_db)],
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     q: str = Query(default="", max_length=200),
 ) -> dict[str, object]:
-    filters = []
+    filters = [dealer_customer_scope(user, Payment.customer_id)]
     if q.strip():
         pattern = f"%{q.strip()}%"
         filters.append(Payment.payment_number.ilike(pattern))
@@ -452,10 +462,15 @@ def list_payments(
 @router.get("/invoices/{invoice_id}/payments")
 def invoice_payments(
     invoice_id: int,
-    _: Annotated[User, Depends(require_permissions("sales:read"))],
+    user: Annotated[User, Depends(require_permissions("sales:read"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    invoice = session.get(Invoice, invoice_id)
+    invoice = session.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
+    )
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
     payment_ids = session.scalars(
@@ -789,7 +804,12 @@ def payment_pdf(
     user: Annotated[User, Depends(require_permissions("payments:read"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> StreamingResponse:
-    payment = session.get(Payment, payment_id)
+    payment = session.scalar(
+        select(Payment).where(
+            Payment.id == payment_id,
+            dealer_customer_scope(user, Payment.customer_id),
+        )
+    )
     if payment is None:
         raise HTTPException(status_code=404, detail="Payment not found")
     output = _payment_output(session, payment)
@@ -830,13 +850,18 @@ def payment_pdf(
 
 @router.get("/credit-notes")
 def list_credit_notes(
-    _: Annotated[User, Depends(require_permissions("sales:read"))],
+    user: Annotated[User, Depends(require_permissions("sales:read"))],
     session: Annotated[Session, Depends(get_db)],
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     invoice_id: int | None = Query(default=None, gt=0),
 ) -> dict[str, object]:
-    filters = [CreditNote.status == "issued"]
+    filters = [
+        CreditNote.status == "issued",
+        CreditNote.invoice_id.in_(
+            select(Invoice.id).where(dealer_customer_scope(user, Invoice.customer_id))
+        ),
+    ]
     if invoice_id is not None:
         filters.append(CreditNote.invoice_id == invoice_id)
     total = session.scalar(select(func.count(CreditNote.id)).where(*filters)) or 0
@@ -907,10 +932,17 @@ def _credit_note_output(session: Session, note: CreditNote) -> dict[str, object]
 @router.get("/credit-notes/{credit_note_id}")
 def get_credit_note(
     credit_note_id: int,
-    _: Annotated[User, Depends(require_permissions("sales:read"))],
+    user: Annotated[User, Depends(require_permissions("sales:read"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    note = session.get(CreditNote, credit_note_id)
+    note = session.scalar(
+        select(CreditNote)
+        .join(Invoice, Invoice.id == CreditNote.invoice_id)
+        .where(
+            CreditNote.id == credit_note_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
+    )
     if note is None:
         raise HTTPException(status_code=404, detail="Credit note not found")
     return _credit_note_output(session, note)
@@ -1148,7 +1180,14 @@ def credit_note_pdf(
     user: Annotated[User, Depends(require_permissions("sales:read"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> StreamingResponse:
-    note = session.get(CreditNote, credit_note_id)
+    note = session.scalar(
+        select(CreditNote)
+        .join(Invoice, Invoice.id == CreditNote.invoice_id)
+        .where(
+            CreditNote.id == credit_note_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
+    )
     if note is None:
         raise HTTPException(status_code=404, detail="Credit note not found")
     output = _credit_note_output(session, note)
@@ -1200,7 +1239,7 @@ def credit_note_pdf(
 @router.get("/customers/{customer_id}/ledger")
 def customer_ledger(
     customer_id: int,
-    _: Annotated[User, Depends(require_permissions("customers:read"))],
+    user: Annotated[User, Depends(require_permissions("customers:read"))],
     session: Annotated[Session, Depends(get_db)],
     date_from: date | None = Query(default=None, alias="from"),
     date_to: date | None = Query(default=None, alias="to"),
@@ -1208,24 +1247,39 @@ def customer_ledger(
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, object]:
     customer = session.scalar(
-        select(Customer).where(Customer.id == customer_id, Customer.deleted_at.is_(None))
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.deleted_at.is_(None),
+            dealer_customer_scope(user, Customer.id),
+        )
     )
     if customer is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     events: list[tuple[date, int, str, str, Decimal, str]] = []
     invoices = session.scalars(
-        select(Invoice).where(Invoice.customer_id == customer_id, Invoice.status == "issued")
+        select(Invoice).where(
+            Invoice.customer_id == customer_id,
+            Invoice.status == "issued",
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
     ).all()
     for invoice in invoices:
         events.append((invoice.invoice_date, invoice.id, "invoice", invoice.invoice_number or "", invoice.grand_total, "debit"))
     credit_notes = session.scalars(
-        select(CreditNote).join(Invoice).where(CreditNote.status == "issued", Invoice.customer_id == customer_id)
+        select(CreditNote)
+        .join(Invoice)
+        .where(
+            CreditNote.status == "issued",
+            Invoice.customer_id == customer_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
     ).all()
     for note in credit_notes:
         events.append((note.note_date, note.id, "credit_note", note.note_number, note.grand_total, "credit"))
     payments = session.scalars(
         select(Payment).where(
             Payment.customer_id == customer_id,
+            dealer_customer_scope(user, Payment.customer_id),
             Payment.status.in_(("recorded", "reversed")),
             Payment.direction.in_(("in", "out")),
         )

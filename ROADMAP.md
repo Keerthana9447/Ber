@@ -4,7 +4,7 @@
 
 - The backend contains stdlib-only domain modules for GST calculations, amount-in-words, invoice numbering, accounting, and payment allocation.
 - Existing unit tests cover these modules; the invoice-number concurrency tests use SQLite.
-- `backend/db/schema.sql` defines 49 tables and integrity triggers. Its Alembic baseline has been applied to fresh local PostgreSQL 16.15 development and test databases; all mapped tables and columns were confirmed by live catalog introspection.
+- `backend/db/schema.sql` currently defines 50 tables and integrity triggers. The Alembic baseline (49 tables, before Phase 4) has been applied to fresh local PostgreSQL 16.15 development and test databases; Phase 4 adds one table and is not yet verified against PostgreSQL.
 - A FastAPI app, generated SQLAlchemy mappings, Alembic baseline, authentication foundation, and React/TypeScript frontend are present. The PostgreSQL schema and baseline are verified locally; production operations remain unverified.
 
 ## Phase 1 — Architecture, database, backend foundation, and authentication
@@ -26,7 +26,7 @@
 - Enforce branch/dealer scope and prevent negative stock unless an authorized configuration explicitly allows it.
 - Test inventory operations and relevant permissions against `berev_test`.
 
-**Status:** Dashboard, customers, products, inventory foundations, company settings/readiness, and customer workflows are implemented. Invoice drafts and server-computed previews are implemented. Phase 3a adds approval, transactional issue/cancel, numbering, stock/accounting posting and reversal, and stored-value PDF output. Payments, quotations/orders, purchases, and production operations remain future work.
+**Status:** Dashboard, customers, products, inventory foundations, company settings/readiness, invoice drafts/previews, invoice lifecycle, payments, refunds, credit notes, and customer statements are implemented. Phase 4 adds quotations, sales orders, delivery challans, sales reports, and PDF output. Purchases, expenses, and production operations remain future work.
 
 ## Phase 3 — Sales, purchasing, GST billing, and invoices
 
@@ -34,7 +34,7 @@
 - Make invoice numbering, invoice posting, and stock updates transactional and safe under concurrent requests.
 - Test intra-state/inter-state tax, issuance, cancellation, and inventory effects.
 
-**Status:** Phase 3a implements draft -> approved -> issued -> cancelled for tax invoices and bills of supply; proformas remain draft-only and can be copied into a new tax-invoice draft. Phase 3b implements customer receipts/advances, allocation, refunds and reversals, credit notes with optional restock, customer statements, and stored-value PDFs. Evidence: 58 backend tests passed on PostgreSQL, 21 frontend tests passed, TypeScript/build passed, and all eight integrity checks passed. Quotations/orders, purchases, and production readiness remain future work.
+**Status:** Phase 3a implements draft -> approved -> issued -> cancelled for tax invoices and bills of supply; proformas remain draft-only and can be copied into a new tax-invoice draft. Phase 3b implements customer receipts/advances, allocation, refunds and reversals, credit notes with optional restock, customer statements, and stored-value PDFs. Earlier Phase 3b evidence: 58 backend tests passed on PostgreSQL, 21 frontend tests passed, TypeScript/build passed, and all eight integrity checks passed. Current Phase 4 changes are not yet verified against PostgreSQL.
 
 ## Phase 4 — Quotations, sales orders, challans, and sales returns
 
@@ -42,22 +42,30 @@
 - Add sales reports from real data. Challans do not change stock unless separately confirmed.
 - Preserve audit history and validate transitions end-to-end.
 
+**Status:** Quotations, conversion to sales orders, order confirmation, partial delivery challans, delivered-quantity invoice drafts, sales reports, and quotation/order PDFs are implemented. Challans do not post stock movements. Sales returns are not implemented. The Phase 4 PostgreSQL integration test was skipped in the current checkout because `BEREV_TEST_DATABASE_URL` is not configured; browser acceptance also remains outstanding.
+
 ## Phase 5 — Purchasing and real costing
 
 - Implement suppliers, purchase requests/orders, goods receipts, purchase invoices, supplier payments, and returns.
 - Increase stock only on posted goods receipts. Replace purchase-price COGS snapshots with the confirmed costing method and document its effect on existing records.
 - Add purchase/input-tax registers, valuation reports, and concurrency/valuation tests.
 
+**Status:** The costing foundation and backend purchasing chain are implemented in code: warehouse-level moving average, immutable opening valuation, supplier/request/order workflows, partial GRNs, serial registration, GRNI/AP/input-GST postings, supplier payments, purchase returns, supplier ledger, purchase register, input-GST summary, and stock valuation report. Backend and PostgreSQL-gated tests have been added. **UNVERIFIED** on PostgreSQL; purchase UI, report exports, reversal/cancellation flows, and manual browser acceptance remain outstanding.
+
 ## Phase 6 — Expenses, dealers, accounting, reports, and administration
 
 - Implement expense approval/posting, dealer portal isolation, full ledgers and accounting reports, persisted notifications, and user/audit administration.
 - Complete report exports and configurable operational settings without inventing company data.
+
+**Status:** Partially implemented: expense submission, approval/rejection, receipt upload/download, accounting posting, and a frontend screen are present. Dealer access isolation, full accounting/reporting and exports, notification scheduler/SMTP, user/password-reset/audit administration, and complete settings screens remain unimplemented.
 
 ## Phase 7 — Hardening, deployment, and acceptance
 
 - Perform the security, performance, dependency-audit, and data-isolation work; complete deployment, backup/restore, and operational documentation.
 - Run critical Playwright flows against a throwaway stack and map every section 25 acceptance criterion to evidence.
 - Record remaining external requirements; do not describe the app as production-ready.
+
+**Status:** Not complete. Security/performance audits, production deployment and tested restore, Playwright acceptance, acceptance-evidence mapping, and tax-professional decisions remain outstanding.
 
 ## Operating constraints
 

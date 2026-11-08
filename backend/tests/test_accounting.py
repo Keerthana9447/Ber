@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal as D
 
 from berev_core import accounting as A
+from berev_core.costing import inventory_value, weighted_average_cost
 from berev_core.gst import LineInput, compute_invoice
 from berev_core.payments import (OpenInvoice, PaymentError, allocate_fifo, invoice_status,
                                  validate_allocations)
@@ -16,6 +17,26 @@ def inv(price, rate, qty):
 
 
 class PostingTests(unittest.TestCase):
+    def test_weighted_average_cost_hand_calculations(self):
+        first = weighted_average_cost(D("0"), None, D("10"), D("100"))
+        self.assertEqual(first, D("100.0000"))
+
+        second = weighted_average_cost(D("10"), first, D("10"), D("120"))
+        self.assertEqual(second, D("110.0000"))
+
+        after_sale_and_receipt = weighted_average_cost(D("6"), second, D("4"), D("140"))
+        self.assertEqual(after_sale_and_receipt, D("122.0000"))
+
+        opening_value = inventory_value(D("3"), D("50"))
+        self.assertEqual(opening_value, D("150.00"))
+        after_opening_receipt = weighted_average_cost(D("3"), D("50"), D("1"), D("70"))
+        self.assertEqual(after_opening_receipt, D("55.0000"))
+        self.assertIsNone(inventory_value(D("3"), None))
+
+    def test_weighted_average_requires_legacy_opening_valuation(self):
+        with self.assertRaisesRegex(ValueError, "opening valuation"):
+            weighted_average_cost(D("1"), None, D("1"), D("10"))
+
     def test_unbalanced_entry_rejected(self):
         with self.assertRaises(A.AccountingError):
             A.JournalEntry(T, "X", "bad", [A.Line("1000", D("10"), D("0")), A.Line("4000", D("0"), D("9"))])
@@ -34,6 +55,32 @@ class PostingTests(unittest.TestCase):
         A.post_customer_refund(T, "RF1", "5", "bank", advance=True)
         A.post_supplier_payment(T, "SP1", "10", "bank")
         A.post_expense(T, "E1", "5100", "10", "cash")
+
+    def test_purchase_invoice_clears_grni_and_books_price_variance(self):
+        purchase = inv("33.33", "5", 1)
+        entry = A.post_purchase_invoice(T, "PI-GRNI", purchase, goods_received_value=D("30.00"))
+        entry.validate()
+        amounts = {line.account: (line.debit, line.credit) for line in entry.lines}
+        self.assertEqual(amounts["2104"], (D("30.00"), D("0")))
+        self.assertEqual(amounts["5191"], (D("3.33"), D("0")))
+        self.assertEqual(amounts[A.AP], (D("0"), purchase.grand_total))
+        self.assertNotIn(A.INVENTORY, amounts)
+
+    def test_expense_posting_separates_input_gst_from_expense_and_payment(self):
+        entry = A.post_expense(
+            T,
+            "EXP-1",
+            "5100",
+            "100.00",
+            "bank",
+            taxes={"cgst": "9.00", "sgst": "9.00"},
+        )
+        entry.validate()
+        amounts = {line.account: (line.debit, line.credit) for line in entry.lines}
+        self.assertEqual(amounts["5100"], (D("100.00"), D("0")))
+        self.assertEqual(amounts["1300"], (D("9.00"), D("0")))
+        self.assertEqual(amounts["1301"], (D("9.00"), D("0")))
+        self.assertEqual(amounts["1010"], (D("0"), D("118.00")))
 
     def test_reversal_nets_to_zero(self):
         e = A.post_sales_invoice(T, "S1", inv("90000", "5", 2))[0]

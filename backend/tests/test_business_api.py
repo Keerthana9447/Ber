@@ -1,5 +1,4 @@
 import asyncio
-import os
 import unittest
 import uuid
 from datetime import date
@@ -8,49 +7,85 @@ from decimal import Decimal
 import hashlib
 import hmac
 import json
+import shutil
+import tempfile
 from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text, update
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from app.auth.security import create_token_pair, hash_password
 from app.config import PROJECT_ROOT, Settings
 from app.main import create_app
 from app.models import (
     AuditLog,
+    CompanySettings,
     Customer,
+    Dealer,
+    Expense,
+    ExpenseCategory,
+    GstRate,
+    GoodsReceiptItem,
     Invoice,
+    InvoiceItem,
     Inventory,
+    HsnSacCode,
+    InventoryOpeningValuation,
     JournalEntry,
+    JournalEntryLine,
     Payment,
     PaymentAllocation,
     PaymentMethod,
     Permission,
+    Product,
+    ProductCategory,
     ProductSerial,
+    Purchase,
+    PurchaseItem,
+    Quotation,
     Role,
+    SalesOrder,
     StockMovement,
+    Supplier,
+    Unit,
     User,
+    Warehouse,
 )
 from app.seed import seed_reference_data
 from berev_core.gst import LineInput, compute_invoice, gstin_checksum_char
 from berev_core.words import amount_in_words
 from pypdf import PdfReader
 from pydantic import SecretStr
+from tests.database_test_config import (
+    configured_test_database_url,
+    database_tests_required,
+    require_test_database_url,
+)
 
 
 @unittest.skipUnless(
-    os.environ.get("BEREV_TEST_DATABASE_URL"),
-    "Set BEREV_TEST_DATABASE_URL to run PostgreSQL API integration tests",
+    configured_test_database_url() is not None or database_tests_required(),
+    "Set TEST_DATABASE_URL or BEREV_TEST_DATABASE_URL to run PostgreSQL API integration tests",
 )
 class BusinessApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.settings = Settings(
             _env_file=PROJECT_ROOT / ".env",
-            database_url=os.environ["BEREV_TEST_DATABASE_URL"],
+            database_url=require_test_database_url(),
         )
         cls.app = create_app(cls.settings)
+        try:
+            with cls.app.state.engine.connect():
+                pass
+        except OperationalError as error:
+            cls.app.state.engine.dispose()
+            raise RuntimeError(
+                "PostgreSQL integration tests require the isolated berev_test database to be available."
+            ) from None
+        cls.receipt_test_dir = tempfile.mkdtemp(prefix="berev-expense-test-")
+        cls.app.state.settings.expense_upload_dir = cls.receipt_test_dir
         cls.factory = cls.app.state.session_factory
         cls.user_email = f"business-api-{uuid.uuid4().hex}@example.test"
         with cls.factory.begin() as session:
@@ -77,6 +112,626 @@ class BusinessApiTests(unittest.TestCase):
                 update(User).where(User.id == cls.user_id).values(is_active=False)
             )
         cls.app.state.engine.dispose()
+        shutil.rmtree(cls.receipt_test_dir, ignore_errors=True)
+
+    def test_refresh_rotation_and_logout_revoke_tokens(self):
+        suffix = uuid.uuid4().hex
+        email = f"token-test-{suffix}@example.test"
+        password = f"test-password-{suffix}"
+        with self.factory.begin() as session:
+            role = session.scalar(select(Role).where(Role.name == "Super Admin"))
+            if role is None:
+                self.fail("Super Admin role is required")
+            user = User(
+                email=email,
+                full_name="Refresh token test",
+                password_hash=hash_password(password),
+                role_id=role.id,
+                must_change_password=False,
+            )
+            session.add(user)
+            session.flush()
+            user_id = user.id
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                login = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
+                self.assertEqual(login.status_code, 200, login.text)
+                first_refresh = login.json()["refresh_token"]
+                rotated = await client.post("/api/v1/auth/refresh", json={"refresh_token": first_refresh})
+                self.assertEqual(rotated.status_code, 200, rotated.text)
+                second_refresh = rotated.json()["refresh_token"]
+                self.assertNotEqual(first_refresh, second_refresh)
+                replay = await client.post("/api/v1/auth/refresh", json={"refresh_token": first_refresh})
+                self.assertEqual(replay.status_code, 401, replay.text)
+                logout = await client.post(
+                    "/api/v1/auth/logout",
+                    headers={"Authorization": f"Bearer {rotated.json()['access_token']}"},
+                    json={"refresh_token": second_refresh},
+                )
+                self.assertEqual(logout.status_code, 204, logout.text)
+                revoked = await client.post("/api/v1/auth/refresh", json={"refresh_token": second_refresh})
+                self.assertEqual(revoked.status_code, 401, revoked.text)
+
+        try:
+            asyncio.run(exercise_api())
+        finally:
+            with self.factory.begin() as session:
+                session.execute(update(User).where(User.id == user_id).values(is_active=False))
+
+    def test_repeated_failed_logins_lock_account(self):
+        suffix = uuid.uuid4().hex
+        email = f"login-lockout-{suffix}@example.test"
+        password = f"test-password-{suffix}"
+        with self.factory.begin() as session:
+            role = session.scalar(select(Role).where(Role.name == "Super Admin"))
+            if role is None:
+                self.fail("Super Admin role is required")
+            user = User(
+                email=email,
+                full_name="Login lockout test",
+                password_hash=hash_password(password),
+                role_id=role.id,
+                must_change_password=False,
+            )
+            session.add(user)
+            session.flush()
+            user_id = user.id
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                for _ in range(self.settings.login_max_attempts):
+                    failed = await client.post(
+                        "/api/v1/auth/login",
+                        json={"email": email, "password": "incorrect-password"},
+                    )
+                    self.assertEqual(failed.status_code, 401, failed.text)
+                locked = await client.post(
+                    "/api/v1/auth/login",
+                    json={"email": email, "password": password},
+                )
+                self.assertEqual(locked.status_code, 401, locked.text)
+
+        try:
+            asyncio.run(exercise_api())
+            with self.factory() as session:
+                locked_until = session.scalar(select(User.locked_until).where(User.id == user_id))
+                self.assertIsNotNone(locked_until)
+        finally:
+            with self.factory.begin() as session:
+                session.execute(update(User).where(User.id == user_id).values(is_active=False))
+
+    def test_expense_receipt_validation_approval_and_journal_posting(self):
+        with self.factory.begin() as session:
+            category = session.scalar(
+                select(ExpenseCategory).where(ExpenseCategory.account_code == "5100").limit(1)
+            )
+            method = session.scalar(
+                select(PaymentMethod).where(PaymentMethod.is_active.is_(True)).order_by(PaymentMethod.id).limit(1)
+            )
+            if category is None or method is None:
+                self.fail("Reference expense category and payment method are required")
+            category_id, method_id = category.id, method.id
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                response = await client.post(
+                    "/api/v1/expenses",
+                    headers=headers,
+                    json={
+                        "expense_date": date.today().isoformat(),
+                        "category_id": category_id,
+                        "method_id": method_id,
+                        "amount": "100.00",
+                        "cgst_amount": "9.00",
+                        "sgst_amount": "9.00",
+                        "vendor": "Test vendor",
+                    },
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                expense_id = response.json()["id"]
+                invalid_receipt = await client.put(
+                    f"/api/v1/expenses/{expense_id}/receipt",
+                    headers={**headers, "Content-Type": "image/png"},
+                    content=b"not an image",
+                )
+                self.assertEqual(invalid_receipt.status_code, 415, invalid_receipt.text)
+                oversized_receipt = await client.put(
+                    f"/api/v1/expenses/{expense_id}/receipt",
+                    headers={**headers, "Content-Type": "application/pdf"},
+                    content=b"%PDF-1.4" + b"x" * (5 * 1024 * 1024),
+                )
+                self.assertEqual(oversized_receipt.status_code, 413, oversized_receipt.text)
+                receipt = await client.put(
+                    f"/api/v1/expenses/{expense_id}/receipt",
+                    headers={**headers, "Content-Type": "application/pdf"},
+                    content=b"%PDF-1.4 test receipt",
+                )
+                self.assertEqual(receipt.status_code, 200, receipt.text)
+                approved = await client.post(f"/api/v1/expenses/{expense_id}/approve", headers=headers)
+                self.assertEqual(approved.status_code, 200, approved.text)
+                posted = await client.post(f"/api/v1/expenses/{expense_id}/post", headers=headers)
+                self.assertEqual(posted.status_code, 200, posted.text)
+                self.assertEqual(posted.json()["status"], "posted")
+                downloaded = await client.get(f"/api/v1/expenses/{expense_id}/receipt", headers=headers)
+                self.assertEqual(downloaded.status_code, 200, downloaded.text)
+                self.assertEqual(downloaded.content, b"%PDF-1.4 test receipt")
+                trial_balance = await client.get(
+                    "/api/v1/accounting/trial-balance",
+                    params={"from": date.today().isoformat(), "to": date.today().isoformat()},
+                    headers=headers,
+                )
+                self.assertEqual(trial_balance.status_code, 200, trial_balance.text)
+                self.assertTrue(trial_balance.json()["is_balanced"])
+                self.assertEqual(
+                    trial_balance.json()["total_debit"],
+                    trial_balance.json()["total_credit"],
+                )
+                profit_and_loss = await client.get(
+                    "/api/v1/accounting/profit-and-loss",
+                    params={"from": date.today().isoformat(), "to": date.today().isoformat()},
+                    headers=headers,
+                )
+                self.assertEqual(profit_and_loss.status_code, 200, profit_and_loss.text)
+                self.assertEqual(profit_and_loss.json()["label"], "before income tax")
+                return expense_id, posted.json()["journal_entry_id"]
+
+        expense_id, journal_id = asyncio.run(exercise_api())
+        with self.factory() as session:
+            expense = session.get(Expense, expense_id)
+            self.assertIsNotNone(expense)
+            self.assertEqual(expense.status, "posted")
+            self.assertEqual(expense.gst_amount, Decimal("18.00"))
+            journal_lines = session.scalars(
+                select(JournalEntryLine).where(JournalEntryLine.entry_id == journal_id)
+            ).all()
+            self.assertEqual(sum((line.debit for line in journal_lines), Decimal("0")), Decimal("118.00"))
+            self.assertEqual(sum((line.credit for line in journal_lines), Decimal("0")), Decimal("118.00"))
+
+    def test_dealer_cannot_list_or_guess_another_dealers_records(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        with self.factory.begin() as session:
+            role = session.scalar(select(Role).where(Role.name == "Dealer / Distributor"))
+            if role is None:
+                self.fail("Dealer role is required")
+            customer_a = Customer(
+                code=f"DL-A-{suffix}",
+                name=f"Dealer A {suffix}",
+                customer_type="dealer",
+                state_code="27",
+            )
+            customer_b = Customer(
+                code=f"DL-B-{suffix}",
+                name=f"Dealer B {suffix}",
+                customer_type="dealer",
+                state_code="27",
+            )
+            session.add_all([customer_a, customer_b])
+            session.flush()
+            dealer_a = Dealer(dealer_code=f"DL-A-{suffix}", customer_id=customer_a.id, status="active")
+            dealer_b = Dealer(dealer_code=f"DL-B-{suffix}", customer_id=customer_b.id, status="active")
+            session.add_all([dealer_a, dealer_b])
+            session.flush()
+            user_a = User(
+                email=f"dealer-a-{suffix.lower()}@example.test",
+                full_name="Dealer A test user",
+                password_hash=hash_password(uuid.uuid4().hex),
+                role_id=role.id,
+                dealer_id=dealer_a.id,
+                must_change_password=False,
+            )
+            session.add(user_a)
+            session.flush()
+            order_a = SalesOrder(
+                number=f"DL-SO-A-{suffix}",
+                customer_id=customer_a.id,
+                order_date=date.today(),
+                place_of_supply_code="27",
+                status="draft",
+            )
+            order_b = SalesOrder(
+                number=f"DL-SO-B-{suffix}",
+                customer_id=customer_b.id,
+                order_date=date.today(),
+                place_of_supply_code="27",
+                status="draft",
+            )
+            session.add_all([order_a, order_b])
+            invoice_a = Invoice(
+                doc_type="tax_invoice",
+                customer_id=customer_a.id,
+                customer_name=customer_a.name,
+                invoice_date=date.today(),
+                place_of_supply_code="27",
+                is_inter_state=False,
+                status="draft",
+            )
+            invoice_b = Invoice(
+                doc_type="tax_invoice",
+                customer_id=customer_b.id,
+                customer_name=customer_b.name,
+                invoice_date=date.today(),
+                place_of_supply_code="27",
+                is_inter_state=False,
+                status="draft",
+            )
+            session.add_all([invoice_a, invoice_b])
+            session.flush()
+            payment_method = session.scalar(
+                select(PaymentMethod).where(PaymentMethod.is_active.is_(True)).order_by(PaymentMethod.id).limit(1)
+            )
+            if payment_method is None:
+                self.fail("Reference payment method is required")
+            payment_a = Payment(
+                payment_number=f"DL-PAY-A-{suffix}",
+                direction="in",
+                customer_id=customer_a.id,
+                method_id=payment_method.id,
+                amount=Decimal("1.00"),
+                payment_date=date.today(),
+                status="recorded",
+            )
+            payment_b = Payment(
+                payment_number=f"DL-PAY-B-{suffix}",
+                direction="in",
+                customer_id=customer_b.id,
+                method_id=payment_method.id,
+                amount=Decimal("1.00"),
+                payment_date=date.today(),
+                status="recorded",
+            )
+            session.add_all([payment_a, payment_b])
+            session.flush()
+            user_a_id = user_a.id
+            order_a_id, order_b_id = order_a.id, order_b.id
+            invoice_a_id, invoice_b_id = invoice_a.id, invoice_b.id
+            payment_a_id, payment_b_id = payment_a.id, payment_b.id
+        token = create_token_pair(self.settings, user_a_id).access_token
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                orders = await client.get("/api/v1/orders", headers=headers)
+                self.assertEqual(orders.status_code, 200, orders.text)
+                listed_order_ids = {row["id"] for row in orders.json()["items"]}
+                self.assertIn(order_a_id, listed_order_ids)
+                self.assertNotIn(order_b_id, listed_order_ids)
+                guessed_order = await client.get(f"/api/v1/orders/{order_b_id}", headers=headers)
+                self.assertEqual(guessed_order.status_code, 404, guessed_order.text)
+
+                invoices = await client.get("/api/v1/invoices", headers=headers)
+                self.assertEqual(invoices.status_code, 200, invoices.text)
+                listed_invoice_ids = {row["id"] for row in invoices.json()["items"]}
+                self.assertIn(invoice_a_id, listed_invoice_ids)
+                self.assertNotIn(invoice_b_id, listed_invoice_ids)
+                guessed_invoice = await client.get(f"/api/v1/invoices/{invoice_b_id}", headers=headers)
+                self.assertEqual(guessed_invoice.status_code, 404, guessed_invoice.text)
+
+                payments = await client.get("/api/v1/payments", headers=headers)
+                self.assertEqual(payments.status_code, 200, payments.text)
+                listed_payment_ids = {row["id"] for row in payments.json()["items"]}
+                self.assertIn(payment_a_id, listed_payment_ids)
+                self.assertNotIn(payment_b_id, listed_payment_ids)
+
+        asyncio.run(exercise_api())
+
+    def test_purchase_grn_concurrency_partial_receipts_serials_and_payables(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        with self.factory.begin() as session:
+            company = session.scalar(select(CompanySettings).order_by(CompanySettings.id).limit(1))
+            if company is None:
+                company = CompanySettings(
+                    legal_name="BEREV API Test",
+                    state_code="27",
+                    invoice_prefix="TEST",
+                    fy_start_month=4,
+                )
+                session.add(company)
+                session.flush()
+            elif company.state_code is None:
+                company.state_code = "27"
+            state_code = company.state_code
+            rate = session.scalar(select(GstRate).where(GstRate.is_active.is_(True)).order_by(GstRate.rate).limit(1))
+            if rate is None:
+                rate = GstRate(rate=Decimal("5"), description="Purchase API test rate")
+                session.add(rate)
+                session.flush()
+            unit = session.get(Unit, "PCS")
+            if unit is None:
+                unit = Unit(code="PCS", name="Pieces")
+                session.add(unit)
+            supplier = Supplier(code=f"PH5-{suffix}", name=f"Purchase supplier {suffix}", state_code=state_code)
+            category = ProductCategory(name=f"Purchase test {suffix}")
+            warehouse = Warehouse(code=f"PH5-{suffix}", name=f"Purchase warehouse {suffix}")
+            hsn = HsnSacCode(
+                code=f"{int(suffix, 16) % 100000000:08d}",
+                kind="HSN",
+                description="Purchase integration test",
+                default_gst_rate=rate.rate,
+                default_cess_rate=Decimal("0"),
+            )
+            session.add_all([supplier, category, warehouse, hsn])
+            session.flush()
+            product = Product(
+                sku=f"PH5-{suffix}",
+                name=f"Purchase item {suffix}",
+                category_id=category.id,
+                hsn_sac=hsn.code,
+                unit=unit.code,
+                purchase_price=Decimal("100"),
+                selling_price=Decimal("150"),
+                gst_rate=rate.rate,
+                cess_rate=Decimal("0"),
+            )
+            serial_category = ProductCategory(name=f"Serialized purchase test {suffix}", is_serialized=True)
+            session.add(serial_category)
+            session.flush()
+            serial_product = Product(
+                sku=f"PH5-S-{suffix}",
+                name=f"Serialized purchase item {suffix}",
+                category_id=serial_category.id,
+                hsn_sac=hsn.code,
+                unit=unit.code,
+                purchase_price=Decimal("100"),
+                selling_price=Decimal("150"),
+                gst_rate=rate.rate,
+                cess_rate=Decimal("0"),
+                is_serialized=True,
+            )
+            session.add_all([product, serial_product])
+            session.flush()
+            supplier_id, product_id = supplier.id, product.id
+            serial_product_id = serial_product.id
+            warehouse_id = warehouse.id
+            gst_rate = format(rate.rate, "f")
+            payment_method = session.scalar(
+                select(PaymentMethod).where(PaymentMethod.is_active.is_(True)).order_by(PaymentMethod.id).limit(1)
+            )
+            if payment_method is None:
+                self.fail("Reference payment method is required")
+            method_id = payment_method.id
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        async def exercise_workflow():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                async def create_order(item_id: int, quantity: str) -> tuple[int, int]:
+                    response = await client.post(
+                        "/api/v1/purchases/requests",
+                        headers=headers,
+                        json={
+                            "supplier_id": supplier_id,
+                            "doc_date": date.today().isoformat(),
+                            "lines": [{
+                                "product_id": item_id,
+                                "quantity": quantity,
+                                "unit_price": "100",
+                                "gst_rate": gst_rate,
+                            }],
+                        },
+                    )
+                    self.assertEqual(response.status_code, 201, response.text)
+                    request_id = response.json()["id"]
+                    response = await client.post(f"/api/v1/purchases/{request_id}/approve", headers=headers)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    response = await client.post(
+                        f"/api/v1/purchases/{request_id}/convert-to-order",
+                        headers=headers,
+                    )
+                    self.assertEqual(response.status_code, 201, response.text)
+                    with self.factory() as session:
+                        order_line = session.scalar(
+                            select(PurchaseItem).where(PurchaseItem.purchase_id == response.json()["id"])
+                        )
+                        self.assertIsNotNone(order_line)
+                        return response.json()["id"], order_line.id
+
+                order_id, order_line_id = await create_order(product_id, "3")
+                receipt_body = {
+                    "warehouse_id": warehouse_id,
+                    "received_date": date.today().isoformat(),
+                    "lines": [{"purchase_item_id": order_line_id, "quantity": "2"}],
+                }
+                competing = await asyncio.gather(
+                    client.post(f"/api/v1/purchases/{order_id}/goods-receipts", headers=headers, json=receipt_body),
+                    client.post(f"/api/v1/purchases/{order_id}/goods-receipts", headers=headers, json=receipt_body),
+                )
+                self.assertEqual(sorted(response.status_code for response in competing), [201, 409])
+                partial = await client.post(
+                    f"/api/v1/purchases/{order_id}/goods-receipts",
+                    headers=headers,
+                    json={
+                        "warehouse_id": warehouse_id,
+                        "received_date": date.today().isoformat(),
+                        "lines": [{"purchase_item_id": order_line_id, "quantity": "1"}],
+                    },
+                )
+                self.assertEqual(partial.status_code, 201, partial.text)
+
+                invoice_payload = {
+                    "supplier_invoice_no": f"SUP-INV-{suffix}-1",
+                    "doc_date": date.today().isoformat(),
+                    "lines": [{
+                        "purchase_item_id": order_line_id,
+                        "quantity": "2",
+                        "unit_price": "100",
+                        "gst_rate": gst_rate,
+                    }],
+                }
+                first_invoice = await client.post(
+                    f"/api/v1/purchases/{order_id}/invoices", headers=headers, json=invoice_payload
+                )
+                self.assertEqual(first_invoice.status_code, 201, first_invoice.text)
+                invoice_payload["supplier_invoice_no"] = f"SUP-INV-{suffix}-2"
+                invoice_payload["lines"][0]["quantity"] = "1"
+                second_invoice = await client.post(
+                    f"/api/v1/purchases/{order_id}/invoices", headers=headers, json=invoice_payload
+                )
+                self.assertEqual(second_invoice.status_code, 201, second_invoice.text)
+                total_due = Decimal(first_invoice.json()["grand_total"]) + Decimal(second_invoice.json()["grand_total"])
+                payment = await client.post(
+                    "/api/v1/supplier-payments",
+                    headers=headers,
+                    json={
+                        "supplier_id": supplier_id,
+                        "method_id": method_id,
+                        "amount": format(total_due, "f"),
+                        "payment_date": date.today().isoformat(),
+                        "allocations": [
+                            {"purchase_id": first_invoice.json()["id"], "amount": first_invoice.json()["grand_total"]},
+                            {"purchase_id": second_invoice.json()["id"], "amount": second_invoice.json()["grand_total"]},
+                        ],
+                    },
+                )
+                self.assertEqual(payment.status_code, 201, payment.text)
+                ledger = await client.get(f"/api/v1/suppliers/{supplier_id}/ledger", headers=headers)
+                self.assertEqual(ledger.status_code, 200, ledger.text)
+                self.assertEqual(ledger.json()["closing_balance"], "0.00")
+
+                serial_order_id, serial_order_line_id = await create_order(serial_product_id, "1")
+                serial_receipt = {
+                    "warehouse_id": warehouse_id,
+                    "received_date": date.today().isoformat(),
+                    "lines": [{
+                        "purchase_item_id": serial_order_line_id,
+                        "quantity": "1",
+                        "serials": [{"chassis_no": f"CH-{suffix}"}],
+                    }],
+                }
+                first_serial_receipt = await client.post(
+                    f"/api/v1/purchases/{serial_order_id}/goods-receipts",
+                    headers=headers,
+                    json=serial_receipt,
+                )
+                self.assertEqual(first_serial_receipt.status_code, 201, first_serial_receipt.text)
+                duplicate_order_id, duplicate_order_line_id = await create_order(serial_product_id, "1")
+                serial_receipt["lines"][0]["purchase_item_id"] = duplicate_order_line_id
+                duplicate = await client.post(
+                    f"/api/v1/purchases/{duplicate_order_id}/goods-receipts",
+                    headers=headers,
+                    json=serial_receipt,
+                )
+                self.assertEqual(duplicate.status_code, 409, duplicate.text)
+
+        asyncio.run(exercise_workflow())
+        with self.factory() as session:
+            inventory = session.get(Inventory, (product_id, warehouse_id))
+            self.assertIsNotNone(inventory)
+            self.assertEqual(inventory.quantity, Decimal("3"))
+            self.assertEqual(inventory.average_unit_cost, Decimal("100.0000"))
+            movement_quantity = session.scalar(
+                select(func.sum(StockMovement.quantity_change)).where(
+                    StockMovement.product_id == product_id,
+                    StockMovement.warehouse_id == warehouse_id,
+                )
+            )
+            self.assertEqual(movement_quantity, Decimal("3"))
+
+    def test_opening_valuation_posts_one_batch_entry_and_reverses(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        category = ProductCategory(name=f"Opening valuation {suffix}")
+        warehouse = Warehouse(code=f"OV-{suffix}", name=f"Opening valuation {suffix}")
+        hsn_code = f"{int(suffix, 16) % 100000000:08d}"
+        with self.factory.begin() as session:
+            session.add_all([
+                category,
+                warehouse,
+                HsnSacCode(
+                    code=hsn_code,
+                    kind="HSN",
+                    description="Opening valuation test product",
+                    default_gst_rate=Decimal("18"),
+                    default_cess_rate=Decimal("0"),
+                ),
+            ])
+            session.flush()
+            product = Product(
+                sku=f"OV-{suffix}",
+                name=f"Opening valuation product {suffix}",
+                category_id=category.id,
+                hsn_sac=hsn_code,
+                unit="PCS",
+                purchase_price=Decimal("1"),
+                selling_price=Decimal("2"),
+                gst_rate=Decimal("18"),
+                cess_rate=Decimal("0"),
+            )
+            session.add(product)
+            session.flush()
+            product_id = product.id
+            warehouse_id = warehouse.id
+            session.add(Inventory(product_id=product_id, warehouse_id=warehouse_id, quantity=Decimal("2")))
+            session.add(
+                StockMovement(
+                    product_id=product_id,
+                    warehouse_id=warehouse_id,
+                    movement_type="opening",
+                    quantity_change=Decimal("2"),
+                    ref_type="test_opening_stock",
+                    created_by=self.user_id,
+                )
+            )
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                response = await client.post(
+                    "/api/v1/inventory/opening-valuations",
+                    json={"lines": [{"product_id": product_id, "warehouse_id": warehouse_id, "unit_cost": "25.50"}]},
+                    headers=headers,
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                self.assertEqual(response.json()["total_value"], "51.00")
+                journal_id = response.json()["journal_entry_id"]
+
+                with self.factory() as session:
+                    inventory = session.get(Inventory, (product_id, warehouse_id))
+                    self.assertEqual(inventory.average_unit_cost, Decimal("25.5000"))
+                    valuation_rows = list(session.scalars(
+                        select(InventoryOpeningValuation).where(InventoryOpeningValuation.journal_entry_id == journal_id)
+                    ))
+                    journal_lines = list(session.scalars(
+                        select(JournalEntryLine).where(JournalEntryLine.entry_id == journal_id)
+                    ))
+                    self.assertEqual(len(valuation_rows), 1)
+                    self.assertEqual(
+                        {(line.account_code, line.debit, line.credit) for line in journal_lines},
+                        {
+                            ("1200", Decimal("51.00"), Decimal("0.00")),
+                            ("3000", Decimal("0.00"), Decimal("51.00")),
+                        },
+                    )
+
+                reversal = await client.post(
+                    f"/api/v1/inventory/opening-valuations/{journal_id}/reverse",
+                    headers=headers,
+                )
+                self.assertEqual(reversal.status_code, 200, reversal.text)
+                with self.factory() as session:
+                    inventory = session.get(Inventory, (product_id, warehouse_id))
+                    self.assertIsNone(inventory.average_unit_cost)
+
+        asyncio.run(exercise_api())
 
     def test_phase3a_accounting_balances_across_issued_invoices(self):
         suffix = uuid.uuid4().hex[:8].upper()
@@ -700,6 +1355,272 @@ class BusinessApiTests(unittest.TestCase):
                 self.assertEqual(duplicate_webhook.status_code, 409)
 
                 self.app.state.settings = self.settings
+
+        asyncio.run(exercise_api())
+
+    def test_phase4_quotation_order_partial_challan_invoice_and_sales_reports(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        pan = f"AB{chr(65 + int(suffix[0], 16))}DE{int(suffix[:4], 16) % 10000:04d}F"
+        gstin_prefix = f"06{pan}1Z"
+        gstin = gstin_prefix + gstin_checksum_char(gstin_prefix)
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                configured = await client.put(
+                    "/api/v1/settings",
+                    json={
+                        "legal_name": "Phase 4 Integration Company",
+                        "address": "Phase 4 test address",
+                        "gstin": gstin,
+                        "pan": pan,
+                        "state_code": "06",
+                        "invoice_prefix": f"F{suffix[:2]}",
+                        "fy_start_month": 4,
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(configured.status_code, 200, configured.text)
+                customer = await client.post(
+                    "/api/v1/customers",
+                    json={
+                        "code": f"PH4-{suffix}",
+                        "name": "Phase 4 integration customer",
+                        "customer_type": "business",
+                        "state_code": "06",
+                        "billing_address": "Phase 4 billing address",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(customer.status_code, 201, customer.text)
+                options = await client.get("/api/v1/product-options", headers=headers)
+                self.assertEqual(options.status_code, 200, options.text)
+                rate = next((row["rate"] for row in options.json()["gst_rates"] if row["rate"] == "18.00"), None)
+                if rate is None:
+                    created_rate = await client.post(
+                        "/api/v1/gst-rates",
+                        json={"rate": "18.00", "description": "Phase 4 integration"},
+                        headers=headers,
+                    )
+                    self.assertEqual(created_rate.status_code, 201, created_rate.text)
+                    rate = created_rate.json()["rate"]
+                category = await client.post(
+                    "/api/v1/product-categories",
+                    json={"name": f"Phase 4 category {suffix}"},
+                    headers=headers,
+                )
+                self.assertEqual(category.status_code, 201, category.text)
+                code = f"{int(suffix, 16) % 100000000:08d}"
+                hsn = await client.post(
+                    "/api/v1/hsn-sac-codes",
+                    json={
+                        "code": code,
+                        "description": "Phase 4 integration good",
+                        "kind": "HSN",
+                        "default_gst_rate": rate,
+                        "default_cess_rate": "0",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(hsn.status_code, 201, hsn.text)
+                product = await client.post(
+                    "/api/v1/products",
+                    json={
+                        "sku": f"PH4-{suffix}",
+                        "name": "Phase 4 integration good",
+                        "category_id": category.json()["id"],
+                        "hsn_sac": code,
+                        "unit": "PCS",
+                        "purchase_price": "40.00",
+                        "selling_price": "100.00",
+                        "gst_rate": rate,
+                        "cess_rate": "0",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(product.status_code, 201, product.text)
+                warehouse = await client.post(
+                    "/api/v1/warehouses",
+                    json={"code": f"PH4-{suffix}", "name": f"Phase 4 warehouse {suffix}"},
+                    headers=headers,
+                )
+                self.assertEqual(warehouse.status_code, 201, warehouse.text)
+                adjustment = await client.post(
+                    "/api/v1/inventory/adjustments",
+                    json={
+                        "product_id": product.json()["id"],
+                        "warehouse_id": warehouse.json()["id"],
+                        "quantity_delta": "2",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(adjustment.status_code, 201, adjustment.text)
+
+                quote_response = await client.post(
+                    "/api/v1/quotations",
+                    json={
+                        "customer_id": customer.json()["id"],
+                        "quote_date": date.today().isoformat(),
+                        "place_of_supply_code": "06",
+                        "lines": [{
+                            "product_id": product.json()["id"],
+                            "quantity": "2",
+                            "unit_price": "100",
+                            "gst_rate": rate,
+                        }],
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(quote_response.status_code, 201, quote_response.text)
+                quote_id = quote_response.json()["id"]
+                premature = await client.post(
+                    f"/api/v1/quotations/{quote_id}/convert-to-order",
+                    headers=headers,
+                )
+                self.assertEqual(premature.status_code, 409, premature.text)
+                sent = await client.post(f"/api/v1/quotations/{quote_id}/send", headers=headers)
+                self.assertEqual(sent.status_code, 200, sent.text)
+                accepted = await client.post(f"/api/v1/quotations/{quote_id}/accept", headers=headers)
+                self.assertEqual(accepted.status_code, 200, accepted.text)
+                order_response = await client.post(
+                    f"/api/v1/quotations/{quote_id}/convert-to-order",
+                    headers=headers,
+                )
+                self.assertEqual(order_response.status_code, 201, order_response.text)
+                order = order_response.json()
+                order_id = order["id"]
+                self.assertEqual(order["lines"][0]["quantity"], "2.000")
+
+                unconfirmed_challan = await client.post(
+                    f"/api/v1/orders/{order_id}/delivery-challans",
+                    json={"lines": [{"sales_order_item_id": order["lines"][0]["id"], "quantity": "1"}]},
+                    headers=headers,
+                )
+                self.assertEqual(unconfirmed_challan.status_code, 409, unconfirmed_challan.text)
+                confirmed = await client.post(f"/api/v1/orders/{order_id}/confirm", headers=headers)
+                self.assertEqual(confirmed.status_code, 200, confirmed.text)
+
+                first_challan = await client.post(
+                    f"/api/v1/orders/{order_id}/delivery-challans",
+                    json={"lines": [{"sales_order_item_id": order["lines"][0]["id"], "quantity": "1"}]},
+                    headers=headers,
+                )
+                self.assertEqual(first_challan.status_code, 201, first_challan.text)
+                first_id = first_challan.json()["id"]
+                dispatched = await client.post(
+                    f"/api/v1/delivery-challans/{first_id}/dispatch",
+                    headers=headers,
+                )
+                self.assertEqual(dispatched.status_code, 200, dispatched.text)
+                with self.factory() as session:
+                    self.assertEqual(
+                        session.get(Inventory, (product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("2.000"),
+                    )
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(StockMovement).where(StockMovement.ref_type == "delivery_challan")),
+                        0,
+                    )
+                delivered = await client.post(
+                    f"/api/v1/delivery-challans/{first_id}/deliver",
+                    headers=headers,
+                )
+                self.assertEqual(delivered.status_code, 200, delivered.text)
+                first_invoice = await client.post(
+                    f"/api/v1/orders/{order_id}/convert-to-invoice",
+                    headers=headers,
+                )
+                self.assertEqual(first_invoice.status_code, 201, first_invoice.text)
+                self.assertEqual(first_invoice.json()["status"], "draft")
+
+                second_challan = await client.post(
+                    f"/api/v1/orders/{order_id}/delivery-challans",
+                    json={"lines": [{"sales_order_item_id": order["lines"][0]["id"], "quantity": "1"}]},
+                    headers=headers,
+                )
+                self.assertEqual(second_challan.status_code, 201, second_challan.text)
+                second_id = second_challan.json()["id"]
+                await client.post(f"/api/v1/delivery-challans/{second_id}/dispatch", headers=headers)
+                await client.post(f"/api/v1/delivery-challans/{second_id}/deliver", headers=headers)
+                second_invoice = await client.post(
+                    f"/api/v1/orders/{order_id}/convert-to-invoice",
+                    headers=headers,
+                )
+                self.assertEqual(second_invoice.status_code, 201, second_invoice.text)
+                with self.factory() as session:
+                    invoice_rows = session.scalars(
+                        select(InvoiceItem)
+                        .where(InvoiceItem.invoice_id.in_([first_invoice.json()["id"], second_invoice.json()["id"]]))
+                    ).all()
+                    self.assertEqual(sum((line.quantity for line in invoice_rows), Decimal("0")), Decimal("2.000"))
+                    self.assertTrue(all(line.sales_order_item_id == order["lines"][0]["id"] for line in invoice_rows))
+                    self.assertEqual(
+                        session.get(Inventory, (product.json()["id"], warehouse.json()["id"])).quantity,
+                        Decimal("2.000"),
+                    )
+                    self.assertEqual(
+                        session.scalar(
+                            select(func.count()).select_from(JournalEntry).where(
+                                JournalEntry.source_type == "invoice",
+                                JournalEntry.source_id.in_([first_invoice.json()["id"], second_invoice.json()["id"]]),
+                            )
+                        ),
+                        0,
+                    )
+
+                quote_pdf = await client.get(f"/api/v1/quotations/{quote_id}/pdf", headers=headers)
+                self.assertEqual(quote_pdf.status_code, 200, quote_pdf.text)
+                self.assertIn(quote_response.json()["number"], PdfReader(BytesIO(quote_pdf.content)).pages[0].extract_text())
+                for group in ("day", "month", "product", "customer", "salesperson", "gst", "branch"):
+                    report_response = await client.get(
+                        "/api/v1/reports/sales",
+                        params={"from_date": date.today().isoformat(), "to_date": date.today().isoformat(), "group_by": group},
+                        headers=headers,
+                    )
+                    self.assertEqual(report_response.status_code, 200, report_response.text)
+                    self.assertIsInstance(report_response.json()["items"], list)
+                self.assertEqual(
+                    (await client.get("/api/v1/quotations", headers=headers)).status_code,
+                    200,
+                )
+
+        asyncio.run(exercise_api())
+
+    def test_phase4_sales_endpoints_require_authentication_and_sales_permissions(self):
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                unauthenticated = await client.get("/api/v1/quotations")
+                self.assertEqual(unauthenticated.status_code, 401, unauthenticated.text)
+                with self.factory.begin() as session:
+                    role = session.scalar(select(Role).where(Role.name == "Dealer / Distributor"))
+                    self.assertIsNotNone(role)
+                    user = User(
+                        email=f"phase4-read-only-{uuid.uuid4().hex}@example.test",
+                        full_name="Phase 4 read only test",
+                        password_hash=hash_password(uuid.uuid4().hex),
+                        role_id=role.id,
+                        must_change_password=False,
+                    )
+                    session.add(user)
+                    session.flush()
+                    token = create_token_pair(self.settings, user.id).access_token
+                forbidden = await client.post(
+                    "/api/v1/quotations",
+                    json={
+                        "customer_id": 1,
+                        "quote_date": date.today().isoformat(),
+                        "place_of_supply_code": "06",
+                        "lines": [{"product_id": 1, "quantity": "1", "unit_price": "1", "gst_rate": "18"}],
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                self.assertEqual(forbidden.status_code, 403, forbidden.text)
 
         asyncio.run(exercise_api())
 

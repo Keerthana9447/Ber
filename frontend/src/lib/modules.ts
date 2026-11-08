@@ -38,6 +38,12 @@ export const MODULES: ModuleDef[] = [
       { key: "order_date", label: "Date", kind: "date" }, { key: "status", label: "Status", kind: "badge" },
       { key: "grand_total", label: "Total", kind: "money" },
     ] },
+  { key: "delivery-challans", label: "Delivery challans", path: "/delivery-challans", endpoint: "/delivery-challans", icon: Truck, group: "Sales",
+    permission: "sales:read", description: "Partial deliveries linked to confirmed sales orders.",
+    columns: [
+      { key: "number", label: "Number" }, { key: "customer_name", label: "Customer" },
+      { key: "challan_date", label: "Date", kind: "date" }, { key: "status", label: "Status", kind: "badge" },
+    ] },
   { key: "invoices", label: "Invoices", path: "/invoices", endpoint: "/invoices", icon: FileText, group: "Sales",
     permission: "sales:read", description: "GST tax invoices, bills of supply and proforma invoices.",
     columns: [
@@ -87,7 +93,7 @@ export const MODULES: ModuleDef[] = [
   { key: "payments", label: "Payments", path: "/payments", endpoint: "/payments", icon: CreditCard, group: "Finance",
     permission: "payments:read", description: "Receipts and supplier payments.",
     columns: [
-      { key: "payment_number", label: "Number" }, { key: "customer_name", label: "Customer" },
+      { key: "payment_number", label: "Number" }, { key: "party_name", label: "Party" },
       { key: "direction", label: "Direction", kind: "badge" }, { key: "payment_date", label: "Date", kind: "date" },
       { key: "method", label: "Method" }, { key: "amount", label: "Amount", kind: "money" },
     ] },
@@ -108,7 +114,7 @@ export const MODULES: ModuleDef[] = [
       { key: "category_name", label: "Category" }, { key: "vendor", label: "Vendor" },
       { key: "status", label: "Status", kind: "badge" }, { key: "amount", label: "Amount", kind: "money" },
     ] },
-  { key: "accounting", label: "Accounting", path: "/accounting", endpoint: "/accounting", icon: BookOpen, group: "Finance",
+  { key: "accounting", label: "Accounting", path: "/accounting", endpoint: "/accounting/journal-entries", icon: BookOpen, group: "Finance",
     permission: "accounting:read", description: "Journal entries and ledgers.",
     columns: [
       { key: "reference", label: "Reference" }, { key: "entry_date", label: "Date", kind: "date" },

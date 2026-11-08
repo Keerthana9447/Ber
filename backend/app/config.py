@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     login_max_attempts: int = Field(default=5, ge=1, le=20)
     login_lockout_minutes: int = Field(default=15, ge=1, le=1440)
     log_level: str = "INFO"
+    expense_upload_dir: Path = PROJECT_ROOT / "data" / "expense-receipts"
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

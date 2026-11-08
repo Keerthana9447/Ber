@@ -1,5 +1,60 @@
 # Changes
 
+## 2026-11-08 — Phase 5 purchasing workflow implementation
+
+- Added supplier list/create/update endpoints and purchase-request approval/order conversion, with audit events and duplicate-safe document identifiers.
+- Added transactional, partial goods receipts. Stock movements, serial records, warehouse quantity, and weighted-average cost update together only when the GRN commits; order/inventory row locks protect concurrent receipts.
+- Added GRNI journals at receipt and purchase-invoice posting with input GST, AP supplier-ledger attribution, and a purchase-price variance account for invoice/receipt cost differences.
+- Added partial supplier invoices, supplier payments with explicit or oldest-first allocation, supplier ledgers, debit notes/purchase returns, purchase register, input-GST-by-rate summary, and stock valuation report.
+- Added purchase chain/GRN/debit-note schema changes and migration `0008_purchasing_workflows`; made additive Phase 4/5 migrations tolerant of objects present in the canonical baseline.
+- Added hand-computed GRNI/purchase-price-variance accounting coverage and PostgreSQL-gated workflow coverage for concurrent GRNs, partial receipt/invoicing, duplicate serial rejection, average-cost valuation, and payables settlement.
+- Updated payments list serialization to expose supplier party names and purchase allocations.
+- Validation in this checkout: 65 backend tests pass, 9 PostgreSQL-gated tests are skipped; generated ORM mappings are in sync; Pylance reports no errors in changed Python files. No PostgreSQL test run or browser acceptance was possible.
+- **Still outstanding:** remaining Phase 5 reversals/exports/UI, all listed Phase 6 work, and Phase 7 hardening/deployment/acceptance. This is not a completion claim for Phases 5–7.
+
+## 2026-11-08 — Phase 6 expense workflow foundation
+
+- Added expense category reference rows for the configured expense chart accounts and API workflows for submission, approval/rejection, and one-time journal posting.
+- Expense posting debits the selected expense account and separately debits input CGST/SGST/IGST/cess accounts, crediting the selected cash/bank ledger for the total. Posting is locked and transactional; posted expense status and journal are committed together.
+- Added raw receipt upload/download endpoints with a 5 MB cap, PDF/JPEG/PNG/WebP media and signature validation, generated filenames, and storage outside the web root using `EXPENSE_UPLOAD_DIR`.
+- Added the React expense screen for recording, receipt upload/download, approvals, and posting; expanded the API contract and added a `0009_expense_workflow` migration.
+- Added journal-derived journal-entry list, trial balance, P&L (explicitly before income tax), and cash/bank book endpoints; the Accounting navigation now lists posted journal entries. A PostgreSQL integration assertion checks balanced trial-balance report totals.
+- Validation: 67 backend tests pass, 10 PostgreSQL-gated tests are skipped; 21 frontend tests pass; TypeScript check/production build pass; ORM generation check and OpenAPI route registration pass. PostgreSQL receipt/expense integration tests remain unexecuted because no test URL is configured.
+- **Still outstanding:** the remaining Phase 5 interfaces/reversals/exports; dealer isolation and user/admin/report/notification/settings requirements; and all Phase 7 hardening, audits, deployment, backup/restore, Playwright acceptance, and external sign-offs.
+
+## 2026-11-08 — Phase 6 dealer portal foundation
+
+- Added dealer profile and dealer-priced catalog APIs and a portal page; dealer accounts land on the portal instead of the admin dashboard.
+- Applied a dealer/customer SQL scope to customer-linked sales documents, invoices, payments, credit notes, and customer ledgers. Added a PostgreSQL-gated test for Dealer A attempting to list or guess Dealer B records.
+- Documented the portal endpoints and record isolation contract.
+- Validation: 57 backend tests pass and 11 PostgreSQL-gated tests are skipped; 21 frontend tests pass and the TypeScript/production build passes; API startup exposes both dealer endpoints and Alembic reports `0009_expense_workflow` as head. The cross-dealer isolation integration test is among those not run because no test database URL is configured.
+- **Still outstanding:** dealer order creation and database verification of the isolation behavior, along with remaining Phase 5 interfaces/reversals/exports; other Phase 6 accounting, reports/exports, notifications, user administration and settings; and Phase 7 hardening, audits, deployment, backup/restore, Playwright acceptance, and external sign-offs.
+
+## 2026-11-08 — PostgreSQL test gate and security-test coverage
+
+- Fixed test URL resolution to read `TEST_DATABASE_URL` from the root `.env` or `BEREV_TEST_DATABASE_URL` from the environment, with an explicit `berev_test` database-name guard and no fallback to the development `DATABASE_URL`.
+- Added `REQUIRE_DB_TESTS=1` behavior and documented the strict CI command. Added database-gated refresh rotation/logout-revocation and login-lockout tests, plus oversized receipt coverage.
+- Verification: 52 database-independent backend tests passed. The strict full suite reported 61 passed, 13 setup errors, and 0 skipped because the PostgreSQL service is absent and connection timed out. Integrity verification, explicitly targeted at `berev_test`, also could not connect; no integrity checks ran.
+- **Not completed:** PostgreSQL behavior and the new database-gated API tests remain unverified. No security review is claimed; remaining security test gaps are listed in `KNOWN_GAPS.md`.
+
+## 2026-11-08 — Phase 5 weighted-average costing foundation
+
+- Added warehouse-level `inventory.average_unit_cost`, immutable opening-valuation rows, and migration `0007_weighted_average_cost` (after the current Phase 4 migration).
+- Added hand-computed weighted-average helpers/tests for a first receipt, differently priced second receipt, a sale between receipts, and an opening valuation.
+- Added admin-only opening valuation API and Stock-screen batch form. Each batch posts one balanced Inventory (1200) / Owner's Equity (3000) journal entry and an audit event; valuation records and journal entries are not edited.
+- Added admin-authenticated `python -m app.cli set-opening-valuation` for command-line batch entry. Opening valuations can be reversed only before subsequent stock movements; the reversal is posted as a separate journal entry.
+- Changed invoice issuance to snapshot warehouse average cost for COGS and return 409 with product names when positive on-hand stock has no opening valuation. It no longer falls back to `purchase_price` or zero.
+- Existing stock is intentionally migrated with unknown (`NULL`) cost. No historical invoice or journal data is rewritten; admins must enter verified opening costs, which increase Inventory and Owner's Equity equally.
+- Validation and PostgreSQL integration are pending. The app/test database is not configured in this checkout; tests must run only against the isolated PostgreSQL test database.
+
+## 2026-11-08 — Phase 4 sales documents continuation
+
+- Added the quotation -> sales order -> delivery challan -> delivered-quantity invoice-draft workflow, sales reports, and quotation/order PDFs with audit events. Challans are delivery records and do not post stock movements.
+- Added canonical schema and generated model updates plus migration `0006_sales_document_chain`.
+- Preserved quotation notes and discounts when editing an existing quotation in the frontend.
+- Validation in this checkout: generated ORM mappings match `schema.sql`; frontend TypeScript and production build pass. The targeted PostgreSQL Phase 4 integration test was skipped because `BEREV_TEST_DATABASE_URL` is not configured.
+- **Still outstanding:** PostgreSQL migration/API integration, manual browser acceptance, sales returns, purchases, expenses, and production operational validation.
+
 ## 2026-11-06 — Phase 1 setup
 
 - Added `ROADMAP.md` describing the implementation phases and verification gates.

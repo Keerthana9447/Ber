@@ -6,13 +6,18 @@ import { useAuth } from "../lib/auth";
 import { formatDate, formatINR } from "../lib/format";
 
 type Customer = { id: number; name: string };
+type Supplier = { id: number; name: string };
 type InvoiceOption = { id: number; invoice_number: string | null; customer_id: number; customer_name: string; grand_total: string; status: string };
+type SupplierInvoiceOption = { id: number; number: string; grand_total: string; outstanding: string };
 type PaymentMethod = { id: number; name: string; ledger_kind: string };
-type Allocation = { invoice_id: number; amount: string };
+type Allocation = { invoice_id?: number; purchase_id?: number; amount: string };
 type PaymentRow = {
   id: number;
   payment_number: string;
   customer_name: string | null;
+  supplier_name?: string | null;
+  party_name?: string | null;
+  customer_id?: number | null;
   direction: string;
   method: string | null;
   amount: string;
@@ -28,13 +33,15 @@ export function PaymentsPage() {
   const queryClient = useQueryClient();
   const { can } = useAuth();
   const [customerId, setCustomerId] = useState("");
+  const [supplierId, setSupplierId] = useState("");
   const [methodId, setMethodId] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   const [reference, setReference] = useState("");
   const [invoiceId, setInvoiceId] = useState("");
+  const [purchaseId, setPurchaseId] = useState("");
   const [allocationAmount, setAllocationAmount] = useState("");
-  const [mode, setMode] = useState<"receipt" | "refund">("receipt");
+  const [mode, setMode] = useState<"receipt" | "refund" | "supplier">("receipt");
   const [refundSource, setRefundSource] = useState<"advance" | "invoice_credit">("advance");
   const [reverseTarget, setReverseTarget] = useState<PaymentRow | null>(null);
   const [refundConfirmOpen, setRefundConfirmOpen] = useState(false);
@@ -50,6 +57,18 @@ export function PaymentsPage() {
     queryFn: ({ signal }) => api<PaymentMethod[]>("/payment-methods", { signal }),
     retry: false,
   });
+  const suppliers = useQuery({
+    queryKey: ["suppliers", "payment-options"],
+    queryFn: ({ signal }) => api<Page<Supplier>>("/suppliers", { query: { page: 1, page_size: 100 }, signal }),
+    enabled: mode === "supplier",
+    retry: false,
+  });
+  const supplierInvoices = useQuery({
+    queryKey: ["supplier-outstanding-invoices", supplierId],
+    queryFn: ({ signal }) => api<Page<SupplierInvoiceOption>>(`/suppliers/${supplierId}/outstanding-invoices`, { signal }),
+    enabled: mode === "supplier" && !!supplierId,
+    retry: false,
+  });
   const payments = useQuery({
     queryKey: ["payments", "list", paymentPage],
     queryFn: ({ signal }) => api<Page<PaymentRow>>("/payments", { query: { page: paymentPage, page_size: 20 }, signal }),
@@ -62,7 +81,19 @@ export function PaymentsPage() {
   });
 
   const record = useMutation({
-    mutationFn: () => mode === "refund"
+    mutationFn: () => mode === "supplier"
+      ? api<PaymentRow>("/supplier-payments", {
+        method: "POST",
+        body: {
+          supplier_id: Number(supplierId),
+          method_id: Number(methodId),
+          amount,
+          payment_date: paymentDate,
+          reference_no: reference || null,
+          allocations: [{ purchase_id: Number(purchaseId), amount }],
+        },
+      })
+      : mode === "refund"
       ? api<PaymentRow>("/payments/refunds", {
         method: "POST",
         body: {
@@ -90,13 +121,17 @@ export function PaymentsPage() {
       await queryClient.invalidateQueries({ queryKey: ["payments"] });
       await queryClient.invalidateQueries({ queryKey: ["invoices"] });
       await queryClient.invalidateQueries({ queryKey: ["customer-ledger"] });
+      await queryClient.invalidateQueries({ queryKey: ["supplier-outstanding-invoices"] });
+      await queryClient.invalidateQueries({ queryKey: ["supplier-ledger"] });
+      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setAmount("");
       setReference("");
       setInvoiceId("");
+      setPurchaseId("");
       setAllocationAmount("");
       setRefundConfirmOpen(false);
       setPaymentPage(1);
-      toast("success", `${mode === "refund" ? "Refund" : "Receipt"} ${payment.payment_number} recorded.`);
+      toast("success", `${mode === "supplier" ? "Supplier payment" : mode === "refund" ? "Refund" : "Receipt"} ${payment.payment_number} recorded.`);
     },
     onError: () => setRefundConfirmOpen(false),
   });
@@ -129,27 +164,28 @@ export function PaymentsPage() {
   }
 
   const canManage = can("payments:manage");
-  const loadError = customers.error ?? methods.error ?? invoices.error;
+  const loadError = methods.error ?? (mode === "supplier" ? suppliers.error ?? supplierInvoices.error : customers.error ?? invoices.error);
   return (
     <div className="mx-auto max-w-7xl space-y-5">
       <header>
         <h1 className="text-2xl font-semibold text-forest-900">Payments</h1>
-        <p className="text-sm text-slate-500">Record customer receipts and advances; reverse posted receipts without deleting history.</p>
+        <p className="text-sm text-slate-500">Record customer receipts, refunds, and supplier payments with ledger allocation.</p>
       </header>
 
       <Card className="p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">{mode === "refund" ? "Record a customer refund" : "Record a customer receipt"}</h2>
+          <h2 className="text-lg font-semibold">{mode === "supplier" ? "Record a supplier payment" : mode === "refund" ? "Record a customer refund" : "Record a customer receipt"}</h2>
           <div className="flex gap-2">
-            <Button type="button" disabled={record.isPending} variant={mode === "receipt" ? "primary" : "secondary"} onClick={() => { setMode("receipt"); setInvoiceId(""); }}>Receipt</Button>
-            <Button type="button" disabled={record.isPending} variant={mode === "refund" ? "primary" : "secondary"} onClick={() => { setMode("refund"); setInvoiceId(""); }}>Refund</Button>
+            <Button type="button" disabled={record.isPending} variant={mode === "receipt" ? "primary" : "secondary"} onClick={() => { setMode("receipt"); setInvoiceId(""); setPurchaseId(""); }}>Receipt</Button>
+            <Button type="button" disabled={record.isPending} variant={mode === "refund" ? "primary" : "secondary"} onClick={() => { setMode("refund"); setInvoiceId(""); setPurchaseId(""); }}>Refund</Button>
+            <Button type="button" disabled={!canManage || record.isPending} variant={mode === "supplier" ? "primary" : "secondary"} onClick={() => { setMode("supplier"); setInvoiceId(""); setPurchaseId(""); }}>Supplier payment</Button>
           </div>
         </div>
-        {(customers.isLoading || methods.isLoading || invoices.isLoading) && <LoadingState label="Loading customers, invoices and payment methods…" />}
+        {(methods.isLoading || (mode === "supplier" ? suppliers.isLoading || (!!supplierId && supplierInvoices.isLoading) : customers.isLoading || invoices.isLoading)) && <LoadingState label="Loading party, invoices and payment methods…" />}
         {loadError && (
-          <ErrorState message={loadError.message} onRetry={() => { void customers.refetch(); void methods.refetch(); void invoices.refetch(); }} />
+          <ErrorState message={loadError.message} onRetry={() => { void customers.refetch(); void methods.refetch(); void invoices.refetch(); void suppliers.refetch(); void supplierInvoices.refetch(); }} />
         )}
-        {customers.data && methods.data && (
+        {methods.data && (mode === "supplier" ? suppliers.data : customers.data) && (
           <form
             className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
             onSubmit={(event) => {
@@ -158,12 +194,19 @@ export function PaymentsPage() {
               else record.mutate();
             }}
           >
-            <label className="text-sm font-medium text-slate-700">Customer
-              <select required disabled={record.isPending} value={customerId} onChange={(event) => { setCustomerId(event.target.value); setInvoiceId(""); }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
-                <option value="">Select customer</option>
-                {customers.data.items.map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
+            {mode === "supplier" ? (
+            <label className="text-sm font-medium text-slate-700">Supplier
+              <select required disabled={record.isPending} value={supplierId} onChange={(event) => { setSupplierId(event.target.value); setPurchaseId(""); }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
+                <option value="">Select supplier</option>
+                {(suppliers.data?.items ?? []).map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
               </select>
             </label>
+            ) : <label className="text-sm font-medium text-slate-700">Customer
+              <select required disabled={record.isPending} value={customerId} onChange={(event) => { setCustomerId(event.target.value); setInvoiceId(""); }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
+                <option value="">Select customer</option>
+                {(customers.data?.items ?? []).map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
+              </select>
+            </label>}
             <label className="text-sm font-medium text-slate-700">Payment method
               <select required disabled={record.isPending} value={methodId} onChange={(event) => setMethodId(event.target.value)} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
                 <option value="">Select method</option>
@@ -173,7 +216,20 @@ export function PaymentsPage() {
             <Field label="Amount" required disabled={record.isPending} min="0.01" step="0.01" type="number" value={amount} onChange={(event) => setAmount(event.target.value)} />
             <Field label="Transaction date" required disabled={record.isPending} type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} />
             <Field label="Reference" disabled={record.isPending} value={reference} onChange={(event) => setReference(event.target.value)} maxLength={255} />
-            {mode === "receipt" ? (
+            {mode === "supplier" ? (
+              <label className="text-sm font-medium text-slate-700">Outstanding purchase invoice
+                <select required disabled={record.isPending || !supplierId} value={purchaseId} onChange={(event) => {
+                  setPurchaseId(event.target.value);
+                  const selected = supplierInvoices.data?.items.find((item) => item.id === Number(event.target.value));
+                  if (selected) setAmount(selected.outstanding);
+                }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
+                  <option value="">Select invoice</option>
+                  {(supplierInvoices.data?.items ?? []).map((invoice) => (
+                    <option key={invoice.id} value={invoice.id}>{invoice.number} · due {formatINR(invoice.outstanding)}</option>
+                  ))}
+                </select>
+              </label>
+            ) : mode === "receipt" ? (
               <>
                 <label className="text-sm font-medium text-slate-700">Allocate to invoice (optional; blank allocates oldest-first)
                   <select disabled={record.isPending} value={invoiceId} onChange={(event) => setInvoiceId(event.target.value)} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
@@ -208,8 +264,8 @@ export function PaymentsPage() {
               <Button
                 type="submit"
                 loading={record.isPending}
-                disabled={!canManage || !customerId || !methodId || !amount || !paymentDate || (mode === "receipt" && !!invoiceId && !!allocationAmount && (Number(allocationAmount) <= 0 || Number(allocationAmount) > Number(amount))) || (mode === "refund" && refundSource === "invoice_credit" && !invoiceId)}
-              >Record {mode === "refund" ? "refund" : "receipt"}</Button>
+                disabled={!canManage || (mode === "supplier" ? !supplierId || !purchaseId : !customerId) || !methodId || !amount || !paymentDate || (mode === "receipt" && !!invoiceId && !!allocationAmount && (Number(allocationAmount) <= 0 || Number(allocationAmount) > Number(amount))) || (mode === "refund" && refundSource === "invoice_credit" && !invoiceId)}
+              >Record {mode === "supplier" ? "payment" : mode === "refund" ? "refund" : "receipt"}</Button>
               {record.isError && <p role="alert" className="mt-2 text-sm text-red-700">{record.error.message}</p>}
             </div>
           </form>
@@ -226,7 +282,7 @@ export function PaymentsPage() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[900px] text-left text-sm">
                 <thead className="bg-ivory-100 text-xs uppercase text-slate-500"><tr>
-                  <th className="px-4 py-3">Payment</th><th className="px-4 py-3">Direction</th><th className="px-4 py-3">Customer</th><th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Payment</th><th className="px-4 py-3">Direction</th><th className="px-4 py-3">Party</th><th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Method</th><th className="px-4 py-3">Amount</th><th className="px-4 py-3">Allocation</th>
                   <th className="px-4 py-3">Status</th><th className="px-4 py-3">Actions</th>
                 </tr></thead>
@@ -235,14 +291,14 @@ export function PaymentsPage() {
                     <tr key={payment.id}>
                       <td className="px-4 py-3 font-medium">{payment.payment_number}</td>
                       <td className="px-4 py-3"><Badge>{payment.direction}</Badge></td>
-                      <td className="px-4 py-3">{payment.customer_name}</td>
+                      <td className="px-4 py-3">{payment.party_name ?? payment.customer_name ?? payment.supplier_name ?? "—"}</td>
                       <td className="px-4 py-3">{formatDate(payment.payment_date)}</td>
                       <td className="px-4 py-3">{payment.method}</td>
                       <td className="px-4 py-3">{formatINR(payment.amount)}</td>
-                      <td className="px-4 py-3">{payment.is_advance ? (payment.direction === "out" ? "Advance refund" : "Advance / partly unallocated") : payment.allocations.map((item) => `${item.invoice_id}: ${formatINR(item.amount)}`).join(", ")}</td>
+                      <td className="px-4 py-3">{payment.is_advance ? (payment.direction === "out" ? "Advance refund" : "Advance / partly unallocated") : payment.allocations.map((item) => `${item.purchase_id ? "Purchase" : "Invoice"} ${item.purchase_id ?? item.invoice_id}: ${formatINR(item.amount)}`).join(", ")}</td>
                       <td className="px-4 py-3"><Badge>{payment.status}</Badge></td>
                       <td className="px-4 py-3"><div className="flex gap-2">
-                        <Button variant="secondary" onClick={() => void download(payment)}>PDF</Button>
+                        {payment.customer_id && <Button variant="secondary" onClick={() => void download(payment)}>PDF</Button>}
                         {payment.status === "recorded" && canManage && (
                           <Button variant="danger" onClick={() => setReverseTarget(payment)}>Reverse</Button>
                         )}

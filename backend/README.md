@@ -19,20 +19,24 @@ Set-Location backend
 ..\.venv\Scripts\python.exe -m uvicorn app.main:create_app --factory
 ```
 
-The API is versioned under `/api/v1`; `/api/v1/health` is an application-liveness endpoint and does not check database connectivity. Implemented workflows include authentication, dashboard, settings, customers, products/inventory, invoice drafts through issue/cancel/PDF, customer receipts and advances, payment allocation/reversal/refunds, credit notes, customer ledger statements, and receipt/credit-note PDFs. Quotations/orders, purchases, expenses, and production operations are not implemented. The app does not create database tables on startup.
+The API is versioned under `/api/v1`; `/api/v1/health` is an application-liveness endpoint and does not check database connectivity. Implemented workflows include authentication, dashboard, settings, customers, products/inventory, invoice drafts through issue/cancel/PDF, customer receipts and advances, payment allocation/reversal/refunds, credit notes, customer and supplier ledgers, quotations, sales orders, delivery challans, order-to-invoice drafts, sales reports, PDFs, opening inventory valuation, supplier/purchase-request/order workflows, partial GRNs, supplier invoices/payments, purchase returns, input-GST and valuation reports, and expense submission/approval/receipt upload/accounting posting. Purchasing is backend-only at this point; purchase exports and return reversal remain incomplete. Dealer workflows, full accounting/report administration, notification scheduling, user/password-reset management, and production operations remain incomplete. The app does not create database tables on startup.
 
 Gateway receipts are disabled unless `GATEWAY_WEBHOOK_SECRET` is configured. The webhook verifies an HMAC-SHA256 signature; connect a real payment provider only after confirming its signing format and operational requirements.
 New PostgreSQL connections use a five-second connect timeout. SQLAlchemy operational failures return HTTP 503 with a `Retry-After: 5` header; this does not replace database availability monitoring.
 
-Run the backend tests from `backend`. Database integration tests require `BEREV_TEST_DATABASE_URL` to point to the isolated PostgreSQL test database:
+Run the backend tests from the project root. PostgreSQL integration tests read `BEREV_TEST_DATABASE_URL` or `TEST_DATABASE_URL` (the latter may come from the root `.env`) and reject any database except `berev_test`. They never fall back to `DATABASE_URL`.
 
 ```powershell
-..\.venv\Scripts\python.exe -m unittest discover -s tests -t . -v
+$env:REQUIRE_DB_TESTS = "1"
+.\.venv\Scripts\python.exe -m pytest backend\tests -q
 ```
 
-The integrity check reports PASS/FAIL for invoice numbering, stock ledger, and accounting invariants. Run it against a configured database:
+CI must set `REQUIRE_DB_TESTS=1` and configure `BEREV_TEST_DATABASE_URL` to an isolated PostgreSQL database named exactly `berev_test`; missing configuration or an unavailable database fails instead of silently skipping database tests. The CI acceptance command must report zero skipped tests.
+
+The integrity check reports PASS/FAIL for invoice numbering, stock ledger, and accounting invariants. Point `DATABASE_URL` at the test database for this command; never use the development database for acceptance verification:
 
 ```powershell
+$env:DATABASE_URL = $env:BEREV_TEST_DATABASE_URL
 ..\.venv\Scripts\python.exe -m app.cli verify-integrity
 ```
 
@@ -56,7 +60,7 @@ Alembic is configured in `alembic.ini`. The baseline and invoice-workflow migrat
 
 Verified locally on PostgreSQL 16.15: the Alembic baseline and migrations through `0005_payments_credit_notes` applied, the seed ran idempotently, and live introspection found all mapped tables and columns. Database-backed auth flows and Phase 2b/3a/3b API, concurrency, rollback, payment, refund, credit-note, PDF, and integrity tests ran against the isolated test database.
 
-**Still unverified:** production load/failover behavior, backups/restores, deployment configuration, and GST legal compliance. Consult a qualified Indian tax professional about GST assumptions, invoice numbering, and date rules before live use.
+**Still unverified:** current Phase 4/5 schema migrations and APIs against PostgreSQL, manual browser acceptance, production load/failover behavior, backups/restores, deployment configuration, and GST legal compliance. Consult a qualified Indian tax professional about GST assumptions, invoice numbering, and date rules before live use.
 
 ## Existing domain modules
 
