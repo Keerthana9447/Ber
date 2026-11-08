@@ -47,6 +47,7 @@ from berev_core.accounting import (
 )
 from berev_core.costing import weighted_average_cost
 from berev_core.gst import GSTError, InvoiceResult, LineInput, compute_invoice, is_valid_gstin
+from berev_core.numbering import next_sequence
 
 router = APIRouter(tags=["purchases", "suppliers"])
 ZERO = Decimal("0.00")
@@ -1284,8 +1285,11 @@ def create_supplier_payment(
                 break
         if remaining != 0:
             raise HTTPException(status_code=409, detail="Payment exceeds this supplier's outstanding posted invoices")
+    raw_connection = session.connection().connection.driver_connection
+    with raw_connection.cursor() as cursor:
+        sequence = next_sequence(cursor, "supplier-payment", "format")
     payment = Payment(
-        payment_number=f"SPAY-TMP-{uuid4().hex}",
+        payment_number=f"SPAY-{sequence:08d}",
         direction="out",
         supplier_id=supplier.id,
         method_id=method.id,
@@ -1299,7 +1303,6 @@ def create_supplier_payment(
     session.add(payment)
     try:
         session.flush()
-        payment.payment_number = f"SPAY-{payment.id:08d}"
         for purchase, amount in allocations:
             session.add(PaymentAllocation(payment_id=payment.id, purchase_id=purchase.id, amount=amount))
         _journal(

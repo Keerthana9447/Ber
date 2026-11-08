@@ -838,6 +838,18 @@ class BusinessApiTests(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(stock.status_code, 201, stock.text)
+                valuation = await client.post(
+                    "/api/v1/inventory/opening-valuations",
+                    json={
+                        "lines": [{
+                            "product_id": product.json()["id"],
+                            "warehouse_id": warehouse.json()["id"],
+                            "unit_cost": "40.0000",
+                        }]
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(valuation.status_code, 201, valuation.text)
 
                 invoice_ids = []
                 for place_of_supply in ("06", "29"):
@@ -1018,6 +1030,18 @@ class BusinessApiTests(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(opening.status_code, 201, opening.text)
+                valuation = await client.post(
+                    "/api/v1/inventory/opening-valuations",
+                    json={
+                        "lines": [{
+                            "product_id": product.json()["id"],
+                            "warehouse_id": warehouse.json()["id"],
+                            "unit_cost": "40.0000",
+                        }]
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(valuation.status_code, 201, valuation.text)
 
                 async def issue_one():
                     draft = await client.post(
@@ -2063,6 +2087,18 @@ class BusinessApiTests(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(stock.status_code, 201, stock.text)
+                valuation = await client.post(
+                    "/api/v1/inventory/opening-valuations",
+                    json={
+                        "lines": [{
+                            "product_id": product.json()["id"],
+                            "warehouse_id": warehouse.json()["id"],
+                            "unit_cost": "40.0000",
+                        }]
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(valuation.status_code, 201, valuation.text)
 
                 serialized_product = await client.post(
                     "/api/v1/products",
@@ -2114,6 +2150,18 @@ class BusinessApiTests(unittest.TestCase):
                             ref_type="integration_fixture",
                         )
                     )
+                serial_valuation = await client.post(
+                    "/api/v1/inventory/opening-valuations",
+                    json={
+                        "lines": [{
+                            "product_id": serialized_product.json()["id"],
+                            "warehouse_id": warehouse.json()["id"],
+                            "unit_cost": "40.0000",
+                        }]
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(serial_valuation.status_code, 201, serial_valuation.text)
 
                 line = {
                     "product_id": product.json()["id"],

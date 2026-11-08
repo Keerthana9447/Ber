@@ -396,7 +396,7 @@ async def upload_expense_receipt(
     extension, signature_check = file_type
     if not data or not signature_check(data):
         raise HTTPException(status_code=415, detail="Receipt content does not match the declared file type")
-    upload_dir: Path = request.app.state.settings.expense_upload_dir
+    upload_dir = Path(request.app.state.settings.expense_upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
     file_name = f"{uuid4().hex}{extension}"
     file_path = upload_dir / file_name
@@ -432,7 +432,7 @@ def download_expense_receipt(
         raise HTTPException(status_code=404, detail="Expense not found")
     if expense.attachment_path is None:
         raise HTTPException(status_code=404, detail="Expense has no receipt")
-    upload_dir: Path = request.app.state.settings.expense_upload_dir
+    upload_dir = Path(request.app.state.settings.expense_upload_dir)
     file_path = upload_dir / expense.attachment_path
     if not file_path.is_file() or file_path.parent.resolve() != upload_dir.resolve():
         raise HTTPException(status_code=404, detail="Expense receipt is unavailable")
