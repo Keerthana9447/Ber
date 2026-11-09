@@ -23,6 +23,7 @@ from app.models import (
     CompanySettings,
     Customer,
     Dealer,
+    DebitNote,
     Expense,
     ExpenseCategory,
     GstRate,
@@ -603,6 +604,170 @@ class BusinessApiTests(unittest.TestCase):
                 ledger = await client.get(f"/api/v1/suppliers/{supplier_id}/ledger", headers=headers)
                 self.assertEqual(ledger.status_code, 200, ledger.text)
                 self.assertEqual(ledger.json()["closing_balance"], "0.00")
+                paid_invoice_cancel = await client.post(
+                    f"/api/v1/purchases/{first_invoice.json()['id']}/cancel",
+                    headers=headers,
+                    json={"reason": "Cancel an invoice with an allocation"},
+                )
+                self.assertEqual(paid_invoice_cancel.status_code, 409, paid_invoice_cancel.text)
+
+                cancellation_order_id, cancellation_order_line_id = await create_order(product_id, "1")
+                receipt = await client.post(
+                    f"/api/v1/purchases/{cancellation_order_id}/goods-receipts",
+                    headers=headers,
+                    json={
+                        "warehouse_id": warehouse_id,
+                        "received_date": date.today().isoformat(),
+                        "lines": [{"purchase_item_id": cancellation_order_line_id, "quantity": "1"}],
+                    },
+                )
+                self.assertEqual(receipt.status_code, 201, receipt.text)
+                order_detail = await client.get(
+                    f"/api/v1/purchases/{cancellation_order_id}", headers=headers
+                )
+                self.assertEqual(order_detail.status_code, 200, order_detail.text)
+                self.assertEqual(len(order_detail.json()["goods_receipts"]), 1)
+                cancellation_invoice = await client.post(
+                    f"/api/v1/purchases/{cancellation_order_id}/invoices",
+                    headers=headers,
+                    json={
+                        "supplier_invoice_no": f"SUP-INV-{suffix}-CANCEL",
+                        "doc_date": date.today().isoformat(),
+                        "lines": [{
+                            "purchase_item_id": cancellation_order_line_id,
+                            "quantity": "1",
+                            "unit_price": "100",
+                            "gst_rate": gst_rate,
+                        }],
+                    },
+                )
+                self.assertEqual(cancellation_invoice.status_code, 201, cancellation_invoice.text)
+                invoice_id = cancellation_invoice.json()["id"]
+                invoice_detail = await client.get(f"/api/v1/purchases/{invoice_id}", headers=headers)
+                self.assertEqual(invoice_detail.status_code, 200, invoice_detail.text)
+                self.assertEqual(invoice_detail.json()["debit_notes"], [])
+                invoice_pdf = await client.get(f"/api/v1/purchases/{invoice_id}/pdf", headers=headers)
+                self.assertEqual(invoice_pdf.status_code, 200, invoice_pdf.text)
+                self.assertTrue(invoice_pdf.content.startswith(b"%PDF"))
+                with self.factory() as session:
+                    invoice_item_id = session.scalar(
+                        select(PurchaseItem.id).where(PurchaseItem.purchase_id == invoice_id)
+                    )
+                debit_note = await client.post(
+                    f"/api/v1/purchases/{invoice_id}/debit-notes",
+                    headers=headers,
+                    json={
+                        "note_date": date.today().isoformat(),
+                        "reason": "Return one defective item",
+                        "lines": [{
+                            "purchase_item_id": invoice_item_id,
+                            "quantity": "1",
+                            "warehouse_id": warehouse_id,
+                        }],
+                    },
+                )
+                self.assertEqual(debit_note.status_code, 201, debit_note.text)
+                note_id = debit_note.json()["id"]
+                invoice_detail = await client.get(f"/api/v1/purchases/{invoice_id}", headers=headers)
+                self.assertEqual(invoice_detail.status_code, 200, invoice_detail.text)
+                self.assertEqual(invoice_detail.json()["debit_notes"][0]["id"], note_id)
+                blocked_cancel = await client.post(
+                    f"/api/v1/purchases/{invoice_id}/cancel",
+                    headers=headers,
+                    json={"reason": "Cancel duplicate supplier invoice"},
+                )
+                self.assertEqual(blocked_cancel.status_code, 409, blocked_cancel.text)
+                note_pdf = await client.get(f"/api/v1/debit-notes/{note_id}/pdf", headers=headers)
+                self.assertEqual(note_pdf.status_code, 200, note_pdf.text)
+                self.assertTrue(note_pdf.content.startswith(b"%PDF"))
+                cancelled_note = await client.post(
+                    f"/api/v1/debit-notes/{note_id}/cancel",
+                    headers=headers,
+                    json={"reason": "Supplier agreed to keep the returned item"},
+                )
+                self.assertEqual(cancelled_note.status_code, 200, cancelled_note.text)
+                repeated_note_cancel = await client.post(
+                    f"/api/v1/debit-notes/{note_id}/cancel",
+                    headers=headers,
+                    json={"reason": "Attempt to cancel the same purchase return"},
+                )
+                self.assertEqual(repeated_note_cancel.status_code, 404, repeated_note_cancel.text)
+                cancelled_invoice = await client.post(
+                    f"/api/v1/purchases/{invoice_id}/cancel",
+                    headers=headers,
+                    json={"reason": "Cancel duplicate supplier invoice"},
+                )
+                self.assertEqual(cancelled_invoice.status_code, 200, cancelled_invoice.text)
+                self.assertEqual(cancelled_invoice.json()["status"], "cancelled")
+                repeated_invoice_cancel = await client.post(
+                    f"/api/v1/purchases/{invoice_id}/cancel",
+                    headers=headers,
+                    json={"reason": "Attempt to cancel the same supplier invoice"},
+                )
+                self.assertEqual(repeated_invoice_cancel.status_code, 404, repeated_invoice_cancel.text)
+                with self.factory() as session:
+                    inventory = session.get(Inventory, (product_id, warehouse_id))
+                    self.assertEqual(inventory.quantity, Decimal("4"))
+                    original = session.scalar(
+                        select(JournalEntry).where(
+                            JournalEntry.source_type == "purchase_invoice",
+                            JournalEntry.source_id == invoice_id,
+                        )
+                    )
+                    reversal = session.scalar(
+                        select(JournalEntry).where(JournalEntry.reverses_entry_id == original.id)
+                    )
+                    self.assertIsNotNone(reversal)
+                    original_note_entry = session.scalar(
+                        select(JournalEntry).where(
+                            JournalEntry.source_type == "debit_note",
+                            JournalEntry.source_id == note_id,
+                        )
+                    )
+                    self.assertIsNotNone(session.scalar(
+                        select(JournalEntry.id).where(
+                            JournalEntry.reverses_entry_id == original_note_entry.id
+                        )
+                    ))
+                    self.assertEqual(session.get(Purchase, invoice_id).status, "cancelled")
+                    note = session.get(DebitNote, note_id)
+                    self.assertEqual(note.status, "cancelled")
+                    audit_actions = set(session.scalars(
+                        select(AuditLog.action).where(
+                            AuditLog.user_id == self.user_id,
+                            AuditLog.entity_id.in_([invoice_id, note_id]),
+                            AuditLog.action.in_([
+                                "export_pdf", "cancel_purchase_invoice", "cancel_purchase_return",
+                            ]),
+                        )
+                    ))
+                    self.assertEqual(
+                        audit_actions,
+                        {"export_pdf", "cancel_purchase_invoice", "cancel_purchase_return"},
+                    )
+                    reversal_movements = list(session.scalars(
+                        select(StockMovement).where(
+                            StockMovement.ref_type == "debit_note_reversal",
+                            StockMovement.ref_id == note_id,
+                        )
+                    ))
+                    self.assertEqual(len(reversal_movements), 1)
+                    self.assertEqual(reversal_movements[0].quantity_change, Decimal("1"))
+                purchase_csv = await client.get("/api/v1/reports/purchase-register.csv", headers=headers)
+                self.assertEqual(purchase_csv.status_code, 200, purchase_csv.text)
+                self.assertIn(b"invoice_number", purchase_csv.content)
+                input_gst_csv = await client.get("/api/v1/reports/input-gst.csv", headers=headers)
+                self.assertEqual(input_gst_csv.status_code, 200, input_gst_csv.text)
+                self.assertIn(b"gst_rate", input_gst_csv.content)
+                with self.factory() as session:
+                    report_exports = session.scalar(
+                        select(func.count(AuditLog.id)).where(
+                            AuditLog.user_id == self.user_id,
+                            AuditLog.entity_id.is_(None),
+                            AuditLog.action == "export_csv",
+                        )
+                    )
+                    self.assertEqual(report_exports, 2)
 
                 serial_order_id, serial_order_line_id = await create_order(serial_product_id, "1")
                 serial_receipt = {
@@ -633,7 +798,7 @@ class BusinessApiTests(unittest.TestCase):
         with self.factory() as session:
             inventory = session.get(Inventory, (product_id, warehouse_id))
             self.assertIsNotNone(inventory)
-            self.assertEqual(inventory.quantity, Decimal("3"))
+            self.assertEqual(inventory.quantity, Decimal("4"))
             self.assertEqual(inventory.average_unit_cost, Decimal("100.0000"))
             movement_quantity = session.scalar(
                 select(func.sum(StockMovement.quantity_change)).where(
@@ -641,7 +806,7 @@ class BusinessApiTests(unittest.TestCase):
                     StockMovement.warehouse_id == warehouse_id,
                 )
             )
-            self.assertEqual(movement_quantity, Decimal("3"))
+            self.assertEqual(movement_quantity, Decimal("4"))
 
     def test_opening_valuation_posts_one_batch_entry_and_reverses(self):
         suffix = uuid.uuid4().hex[:8].upper()

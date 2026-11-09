@@ -55,6 +55,7 @@ PERMISSION_DESCRIPTIONS = {
     "users:update": "Update and deactivate user accounts",
     "roles:read": "View roles and permissions",
     "roles:update": "Manage roles and permission assignments",
+    "audit:read": "View administrative and login audit records",
     "customers:read": "View customer records",
     "customers:create": "Create customer records",
     "customers:update": "Update customer records",

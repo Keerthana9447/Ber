@@ -34,7 +34,7 @@ CLASS_NAMES = {
     "expense_categories": "ExpenseCategory", "expenses": "Expense",
     "accounts": "LedgerAccount", "journal_entries": "JournalEntry",
     "journal_entry_lines": "JournalEntryLine", "notifications": "Notification",
-    "audit_logs": "AuditLog",
+    "notification_deliveries": "NotificationDelivery", "audit_logs": "AuditLog",
 }
 
 TYPE_MAP = {

@@ -8,6 +8,7 @@ certifi==2026.10.23
 cffi==2.1.1
 click==8.5.0
 colorama==0.4.6
+et-xmlfile==2.0.0
 fastapi==0.162.0
 greenlet==3.5.6
 h11==0.16.0
@@ -19,6 +20,7 @@ iniconfig==2.3.1
 Mako==1.4.3
 MarkupSafe==3.0.4
 opentelemetry-api==1.45.2
+openpyxl==3.1.5
 packaging==26.3
 pluggy==1.7.0
 psycopg==3.3.8

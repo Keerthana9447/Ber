@@ -119,7 +119,15 @@ allocations and issued credit/debit notes.
 - `POST /purchases/{invoice_id}/debit-notes` records a stock return, reverses input GST and supplier payable, and removes
   inventory at its moving-average cost. `POST /supplier-payments` allocates a supplier payment to posted invoices;
   `GET /suppliers/{id}/ledger` returns the supplier journal ledger.
+- `POST /purchases/{invoice_id}/cancel` reverses the posted invoice journal and marks the document cancelled. It is
+  rejected while the invoice has an allocated payment or an issued debit note. Goods receipts remain posted stock/GRNI
+  records; invoice cancellation does not pretend received goods were physically returned.
+- `POST /debit-notes/{id}/cancel` reverses the debit-note journal and appends compensating stock movements, restoring
+  inventory quantity, weighted-average cost, and returned serial availability. Both cancellation routes require a reason
+  and preserve the original document and journal.
+- `GET /purchases/{id}/pdf` and `GET /debit-notes/{id}/pdf` download permission-checked, audit-logged PDFs.
 - `GET /reports/purchase-register`, `/reports/input-gst`, and `/reports/stock-valuation` are permission-checked real-data reports.
+  `/reports/purchase-register.csv` and `/reports/input-gst.csv` are permission-checked, audit-logged CSV exports.
 - Expenses use `GET /expense-categories`, `GET/POST /expenses`, `POST /expenses/{id}/approve|reject|post`, and
   `PUT/GET /expenses/{id}/receipt`. Expense amount is the taxable base; input CGST/SGST/IGST/cess are entered separately
   and posted to input-tax accounts. Receipts accept PDF/JPEG/PNG/WebP up to 5 MB and are stored outside the web root under

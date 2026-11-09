@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import csv
 from datetime import date
 from decimal import Decimal
+from html import escape
+from io import BytesIO, StringIO
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -44,6 +51,7 @@ from berev_core.accounting import (
     Line as CoreLine,
     post_purchase_invoice,
     post_supplier_payment,
+    reverse_entry,
 )
 from berev_core.costing import weighted_average_cost
 from berev_core.gst import GSTError, InvoiceResult, LineInput, compute_invoice, is_valid_gstin
@@ -190,13 +198,25 @@ class PurchaseReturnWrite(BaseModel):
         return normalized
 
 
+class PurchaseCancellationWrite(BaseModel):
+    reason: str = Field(min_length=10, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 10:
+            raise ValueError("Cancellation reason must be at least 10 characters")
+        return normalized
+
+
 def _audit(
     session: Session,
     user: User,
     request: Request,
     action: str,
     entity: str,
-    entity_id: int,
+    entity_id: int | None,
     new_values: dict[str, object],
 ) -> None:
     session.add(
@@ -209,6 +229,12 @@ def _audit(
             ip_address=request.client.host if request.client else None,
         )
     )
+
+
+def _csv_safe(value: str) -> str:
+    if value.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")):
+        return f"'{value}"
+    return value
 
 
 def _line_result(
@@ -296,6 +322,7 @@ def _journal(
     source_type: str,
     source_id: int,
     supplier_id: int | None = None,
+    reverses_entry_id: int | None = None,
 ) -> JournalEntry:
     entry = JournalEntry(
         entry_date=core_entry.entry_date,
@@ -303,6 +330,7 @@ def _journal(
         narration=core_entry.narration,
         source_type=source_type,
         source_id=source_id,
+        reverses_entry_id=reverses_entry_id,
         posted_by=user_id,
     )
     session.add(entry)
@@ -318,6 +346,42 @@ def _journal(
         for line in core_entry.lines
     )
     return entry
+
+
+def _reverse_journal(
+    session: Session,
+    original: JournalEntry,
+    user: User,
+    source_type: str,
+    source_id: int,
+    supplier_id: int | None,
+    reason: str,
+) -> JournalEntry:
+    if session.scalar(
+        select(JournalEntry.id).where(JournalEntry.reverses_entry_id == original.id).with_for_update()
+    ) is not None:
+        raise HTTPException(status_code=409, detail="This accounting entry has already been reversed")
+    original_lines = session.scalars(
+        select(JournalEntryLine)
+        .where(JournalEntryLine.entry_id == original.id)
+        .order_by(JournalEntryLine.id)
+    ).all()
+    core_original = CoreJournalEntry(
+        original.entry_date,
+        original.reference,
+        original.narration or original.reference,
+        [CoreLine(line.account_code, line.debit, line.credit) for line in original_lines],
+    )
+    reversal = reverse_entry(core_original, date.today(), reason)
+    return _journal(
+        session,
+        reversal,
+        user.id,
+        source_type,
+        source_id,
+        supplier_id,
+        reverses_entry_id=original.id,
+    )
 
 
 def _supplier_dict(supplier: Supplier) -> dict[str, object]:
@@ -488,6 +552,12 @@ def get_purchase(
     items = session.scalars(
         select(PurchaseItem).where(PurchaseItem.purchase_id == purchase.id).order_by(PurchaseItem.id)
     ).all()
+    debit_notes = session.scalars(
+        select(DebitNote).where(DebitNote.purchase_id == purchase.id).order_by(DebitNote.id)
+    ).all()
+    goods_receipts = session.scalars(
+        select(GoodsReceipt).where(GoodsReceipt.purchase_id == purchase.id).order_by(GoodsReceipt.id)
+    ).all()
     return {
         "id": purchase.id,
         "number": purchase.number,
@@ -505,6 +575,26 @@ def get_purchase(
         "cess_total": format(purchase.cess_total, "f"),
         "grand_total": format(purchase.grand_total, "f"),
         "parent_id": purchase.parent_id,
+        "debit_notes": [
+            {
+                "id": note.id,
+                "note_number": note.note_number,
+                "note_date": note.note_date.isoformat(),
+                "reason": note.reason,
+                "status": note.status,
+                "grand_total": format(note.grand_total, "f"),
+            }
+            for note in debit_notes
+        ],
+        "goods_receipts": [
+            {
+                "id": receipt.id,
+                "grn_number": receipt.grn_number,
+                "received_date": receipt.received_date.isoformat(),
+                "status": receipt.status,
+            }
+            for receipt in goods_receipts
+        ],
         "items": [
             {
                 "id": item.id,
@@ -526,6 +616,71 @@ def get_purchase(
             for item in items
         ],
     }
+
+
+@router.get("/purchases/{purchase_id}/pdf")
+def purchase_pdf(
+    purchase_id: int,
+    request: Request,
+    user: Annotated[User, Depends(require_permissions("purchases:read"))],
+    session: Annotated[Session, Depends(get_db)],
+) -> StreamingResponse:
+    purchase = session.get(Purchase, purchase_id)
+    if purchase is None:
+        raise HTTPException(status_code=404, detail="Purchase document not found")
+    supplier = session.get(Supplier, purchase.supplier_id) if purchase.supplier_id else None
+    items = session.scalars(
+        select(PurchaseItem).where(PurchaseItem.purchase_id == purchase.id).order_by(PurchaseItem.id)
+    ).all()
+    styles = getSampleStyleSheet()
+    output = BytesIO()
+    document = SimpleDocTemplate(output, pagesize=A4)
+    content = [
+        Paragraph(f"Purchase document {escape(purchase.number)}", styles["Title"]),
+        Spacer(1, 10),
+        Paragraph(f"Supplier: {escape(supplier.name) if supplier else 'Not assigned'}", styles["BodyText"]),
+        Paragraph(f"Date: {purchase.doc_date.isoformat()} | Status: {escape(purchase.status)}", styles["BodyText"]),
+        Spacer(1, 12),
+    ]
+    rows = [["Description", "HSN/SAC", "Qty", "Unit price", "Taxable", "GST", "Total"]]
+    for item in items:
+        rows.append([
+            Paragraph(escape(item.description or ""), styles["BodyText"]),
+            escape(item.hsn_sac or ""),
+            format(item.quantity, "f"),
+            format(item.unit_price, "f"),
+            format(item.taxable_value, "f"),
+            format(item.cgst + item.sgst + item.igst + item.cess, "f"),
+            format(item.taxable_value + item.cgst + item.sgst + item.igst + item.cess, "f"),
+        ])
+    rows.append(["", "", "", "", "Grand total", "", format(purchase.grand_total, "f")])
+    table = Table(rows, repeatRows=1, colWidths=[67, 45, 37, 58, 65, 48, 65])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), "#e8eef5"),
+        ("GRID", (0, 0), (-1, -1), 0.4, "#aab4bf"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+    ]))
+    content.append(table)
+    content.extend([
+        Spacer(1, 8),
+        Paragraph(
+            "Taxable: "
+            f"{format(purchase.taxable_total, 'f')} | Tax: "
+            f"{format(purchase.cgst_total + purchase.sgst_total + purchase.igst_total + purchase.cess_total, 'f')} | "
+            f"Round off: {format(purchase.round_off, 'f')} | Grand total: {format(purchase.grand_total, 'f')}",
+            styles["BodyText"],
+        ),
+    ])
+    document.build(content)
+    _audit(session, user, request, "export_pdf", "purchase", purchase.id, {"number": purchase.number})
+    session.commit()
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{purchase.number}.pdf"'},
+    )
 
 
 @router.post("/purchases/requests", status_code=status.HTTP_201_CREATED)
@@ -1218,6 +1373,242 @@ def post_purchase_return(
     return {"id": note.id, "note_number": note.note_number, "status": note.status, "grand_total": format(note.grand_total, "f")}
 
 
+@router.post("/purchases/{purchase_id}/cancel")
+def cancel_purchase_invoice(
+    purchase_id: int,
+    body: PurchaseCancellationWrite,
+    request: Request,
+    user: Annotated[User, Depends(require_permissions("purchases:manage"))],
+    session: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    invoice = session.scalar(select(Purchase).where(Purchase.id == purchase_id).with_for_update())
+    if invoice is None or invoice.doc_type != "purchase_invoice" or invoice.status != "posted":
+        raise HTTPException(status_code=404, detail="Posted purchase invoice not found")
+    active_notes = session.scalar(
+        select(func.count(DebitNote.id)).where(
+            DebitNote.purchase_id == invoice.id, DebitNote.status == "issued"
+        )
+    ) or 0
+    if active_notes:
+        raise HTTPException(status_code=409, detail="Cancel issued purchase returns before cancelling the invoice")
+    allocated = session.scalar(
+        select(func.count(PaymentAllocation.id))
+        .join(Payment, Payment.id == PaymentAllocation.payment_id)
+        .where(PaymentAllocation.purchase_id == invoice.id)
+    ) or 0
+    if allocated:
+        raise HTTPException(status_code=409, detail="A purchase invoice with allocated supplier payments cannot be cancelled")
+    original = session.scalar(
+        select(JournalEntry)
+        .where(JournalEntry.source_type == "purchase_invoice", JournalEntry.source_id == invoice.id)
+        .with_for_update()
+    )
+    if original is None:
+        raise HTTPException(status_code=409, detail="Purchase invoice has no posted accounting entry")
+    supplier_id = invoice.supplier_id
+    try:
+        _reverse_journal(
+            session, original, user, "purchase_invoice_cancellation", invoice.id, supplier_id, body.reason
+        )
+        invoice.status = "cancelled"
+        _audit(
+            session, user, request, "cancel_purchase_invoice", "purchase_invoice", invoice.id,
+            {"reason": body.reason, "reverses_entry_id": original.id},
+        )
+        session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
+    except (IntegrityError, ValueError) as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"id": invoice.id, "number": invoice.number, "status": invoice.status}
+
+
+@router.get("/debit-notes/{debit_note_id}/pdf")
+def debit_note_pdf(
+    debit_note_id: int,
+    request: Request,
+    user: Annotated[User, Depends(require_permissions("purchases:read"))],
+    session: Annotated[Session, Depends(get_db)],
+) -> StreamingResponse:
+    note = session.get(DebitNote, debit_note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Purchase debit note not found")
+    invoice = session.get(Purchase, note.purchase_id)
+    supplier = session.get(Supplier, invoice.supplier_id) if invoice and invoice.supplier_id else None
+    items = session.scalars(
+        select(DebitNoteItem).where(DebitNoteItem.debit_note_id == note.id).order_by(DebitNoteItem.id)
+    ).all()
+    styles = getSampleStyleSheet()
+    output = BytesIO()
+    document = SimpleDocTemplate(output, pagesize=A4)
+    content = [
+        Paragraph(f"Purchase debit note {escape(note.note_number)}", styles["Title"]),
+        Spacer(1, 10),
+        Paragraph(f"Supplier: {escape(supplier.name) if supplier else 'Not assigned'}", styles["BodyText"]),
+        Paragraph(f"Date: {note.note_date.isoformat()} | Status: {escape(note.status)}", styles["BodyText"]),
+        Paragraph(f"Reason: {escape(note.reason)}", styles["BodyText"]),
+        Spacer(1, 12),
+    ]
+    rows = [["Purchase line", "Qty", "Taxable", "CGST", "SGST", "IGST", "Cess"]]
+    for item in items:
+        rows.append([
+            str(item.purchase_item_id),
+            format(item.quantity, "f"),
+            format(item.taxable_value, "f"),
+            format(item.cgst, "f"),
+            format(item.sgst, "f"),
+            format(item.igst, "f"),
+            format(item.cess, "f"),
+        ])
+    rows.append(["", "", "Grand total", "", "", "", format(note.grand_total, "f")])
+    table = Table(rows, repeatRows=1, colWidths=[80, 46, 70, 58, 58, 58, 58])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), "#e8eef5"),
+        ("GRID", (0, 0), (-1, -1), 0.4, "#aab4bf"),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+    ]))
+    content.append(table)
+    content.extend([
+        Spacer(1, 8),
+        Paragraph(
+            "Taxable: "
+            f"{format(note.taxable_total, 'f')} | Input-tax reversal: "
+            f"{format(note.cgst_total + note.sgst_total + note.igst_total + note.cess_total, 'f')} | "
+            f"Round off: {format(note.round_off, 'f')} | Grand total: {format(note.grand_total, 'f')}",
+            styles["BodyText"],
+        ),
+    ])
+    document.build(content)
+    _audit(session, user, request, "export_pdf", "debit_note", note.id, {"note_number": note.note_number})
+    session.commit()
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{note.note_number}.pdf"'},
+    )
+
+
+@router.post("/debit-notes/{debit_note_id}/cancel")
+def cancel_purchase_return(
+    debit_note_id: int,
+    body: PurchaseCancellationWrite,
+    request: Request,
+    user: Annotated[User, Depends(require_permissions("purchases:manage"))],
+    session: Annotated[Session, Depends(get_db)],
+) -> dict[str, object]:
+    note = session.scalar(select(DebitNote).where(DebitNote.id == debit_note_id).with_for_update())
+    if note is None or note.status != "issued":
+        raise HTTPException(status_code=404, detail="Issued purchase debit note not found")
+    invoice = session.get(Purchase, note.purchase_id)
+    supplier_id = invoice.supplier_id if invoice else None
+    original = session.scalar(
+        select(JournalEntry)
+        .where(JournalEntry.source_type == "debit_note", JournalEntry.source_id == note.id)
+        .with_for_update()
+    )
+    if original is None:
+        raise HTTPException(status_code=409, detail="Purchase debit note has no posted accounting entry")
+    items = session.scalars(
+        select(DebitNoteItem)
+        .where(DebitNoteItem.debit_note_id == note.id)
+        .order_by(DebitNoteItem.id)
+        .with_for_update()
+    ).all()
+    movements = session.scalars(
+        select(StockMovement)
+        .where(StockMovement.ref_type == "debit_note", StockMovement.ref_id == note.id)
+        .order_by(StockMovement.id)
+        .with_for_update()
+    ).all()
+    if not items:
+        raise HTTPException(status_code=409, detail="Purchase debit note has no return lines")
+    purchase_items = {
+        row.id: row
+        for row in session.scalars(
+            select(PurchaseItem)
+            .where(PurchaseItem.id.in_([item.purchase_item_id for item in items]))
+        ).all()
+    }
+    if not movements or len(movements) != len(items):
+        raise HTTPException(status_code=409, detail="Purchase return stock ledger is incomplete")
+    try:
+        _reverse_journal(
+            session, original, user, "debit_note_cancellation", note.id, supplier_id, body.reason
+        )
+        movement_by_key: dict[tuple[int, int, int | None], list[StockMovement]] = {}
+        for movement in movements:
+            movement_by_key.setdefault(
+                (movement.product_id, movement.warehouse_id, movement.serial_id), []
+            ).append(movement)
+        for item in items:
+            purchase_item = purchase_items.get(item.purchase_item_id)
+            if purchase_item is None or item.warehouse_id is None:
+                raise HTTPException(status_code=409, detail="Purchase return line references are incomplete")
+            key = (purchase_item.product_id, item.warehouse_id, item.serial_id)
+            candidates = movement_by_key.get(key, [])
+            movement = candidates.pop(0) if candidates else None
+            if movement is None or movement.quantity_change != -item.quantity:
+                raise HTTPException(status_code=409, detail="Purchase return stock ledger does not match its document")
+            inventory = session.scalar(
+                select(Inventory)
+                .where(
+                    Inventory.product_id == purchase_item.product_id,
+                    Inventory.warehouse_id == item.warehouse_id,
+                )
+                .with_for_update()
+            )
+            if inventory is None or item.unit_cost is None:
+                raise HTTPException(status_code=409, detail="Purchase return inventory valuation is unavailable")
+            inventory.average_unit_cost = weighted_average_cost(
+                Decimal(inventory.quantity),
+                inventory.average_unit_cost,
+                Decimal(item.quantity),
+                Decimal(item.unit_cost),
+            )
+            inventory.quantity = Decimal(inventory.quantity) + Decimal(item.quantity)
+            if item.serial_id is not None:
+                serial = session.scalar(
+                    select(ProductSerial)
+                    .where(ProductSerial.id == item.serial_id)
+                    .with_for_update()
+                )
+                if serial is None or serial.status != "returned":
+                    raise HTTPException(status_code=409, detail="Returned serial is no longer available to restore")
+                serial.status = "available"
+            session.add(
+                StockMovement(
+                    product_id=purchase_item.product_id,
+                    warehouse_id=item.warehouse_id,
+                    serial_id=item.serial_id,
+                    movement_type="adjustment",
+                    quantity_change=item.quantity,
+                    unit_cost=item.unit_cost,
+                    ref_type="debit_note_reversal",
+                    ref_id=note.id,
+                    notes=body.reason,
+                    created_by=user.id,
+                )
+            )
+        if any(movement_rows for movement_rows in movement_by_key.values()):
+            raise HTTPException(status_code=409, detail="Purchase return stock ledger has unmatched movements")
+        note.status = "cancelled"
+        _audit(
+            session, user, request, "cancel_purchase_return", "debit_note", note.id,
+            {"reason": body.reason, "reverses_entry_id": original.id},
+        )
+        session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
+    except (IntegrityError, ValueError) as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"id": note.id, "note_number": note.note_number, "status": note.status}
+
+
 def _purchase_outstanding(session: Session, purchase: Purchase) -> Decimal:
     paid = session.scalar(
         select(func.coalesce(func.sum(PaymentAllocation.amount), 0))
@@ -1479,6 +1870,101 @@ def input_gst_report(
             for row in by_rate
         ],
     }
+
+
+@router.get("/reports/purchase-register.csv")
+def purchase_register_csv(
+    request: Request,
+    user: Annotated[User, Depends(require_permissions("reports:read"))],
+    session: Annotated[Session, Depends(get_db)],
+    date_from: date | None = Query(default=None, alias="from"),
+    date_to: date | None = Query(default=None, alias="to"),
+) -> StreamingResponse:
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="from must be on or before to")
+    filters = [Purchase.doc_type == "purchase_invoice", Purchase.status == "posted"]
+    if date_from:
+        filters.append(Purchase.doc_date >= date_from)
+    if date_to:
+        filters.append(Purchase.doc_date <= date_to)
+    rows = session.execute(
+        select(Purchase, Supplier.name)
+        .join(Supplier, Supplier.id == Purchase.supplier_id)
+        .where(*filters)
+        .order_by(Purchase.doc_date, Purchase.id)
+    ).all()
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["invoice_number", "supplier", "date", "taxable", "cgst", "sgst", "igst", "cess", "grand_total"])
+    for purchase, supplier_name in rows:
+        writer.writerow([
+            _csv_safe(purchase.number),
+            _csv_safe(supplier_name),
+            purchase.doc_date.isoformat(),
+            format(purchase.taxable_total, "f"),
+            format(purchase.cgst_total, "f"),
+            format(purchase.sgst_total, "f"),
+            format(purchase.igst_total, "f"),
+            format(purchase.cess_total, "f"),
+            format(purchase.grand_total, "f"),
+        ])
+    _audit(session, user, request, "export_csv", "purchase_register", None, {"rows": len(rows)})
+    session.commit()
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="purchase-register.csv"'},
+    )
+
+
+@router.get("/reports/input-gst.csv")
+def input_gst_csv(
+    request: Request,
+    user: Annotated[User, Depends(require_permissions("reports:read"))],
+    session: Annotated[Session, Depends(get_db)],
+    date_from: date | None = Query(default=None, alias="from"),
+    date_to: date | None = Query(default=None, alias="to"),
+) -> StreamingResponse:
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="from must be on or before to")
+    filters = [Purchase.doc_type == "purchase_invoice", Purchase.status == "posted"]
+    if date_from:
+        filters.append(Purchase.doc_date >= date_from)
+    if date_to:
+        filters.append(Purchase.doc_date <= date_to)
+    rows = session.execute(
+        select(Purchase, Supplier.name, PurchaseItem)
+        .join(Supplier, Supplier.id == Purchase.supplier_id)
+        .join(PurchaseItem, PurchaseItem.purchase_id == Purchase.id)
+        .where(*filters)
+        .order_by(Purchase.doc_date, Purchase.id, PurchaseItem.id)
+    ).all()
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "invoice_number", "supplier", "date", "hsn_sac", "gst_rate", "taxable",
+        "cgst", "sgst", "igst", "cess",
+    ])
+    for purchase, supplier_name, item in rows:
+        writer.writerow([
+            _csv_safe(purchase.number),
+            _csv_safe(supplier_name),
+            purchase.doc_date.isoformat(),
+            _csv_safe(item.hsn_sac or ""),
+            format(item.gst_rate, "f"),
+            format(item.taxable_value, "f"),
+            format(item.cgst, "f"),
+            format(item.sgst, "f"),
+            format(item.igst, "f"),
+            format(item.cess, "f"),
+        ])
+    _audit(session, user, request, "export_csv", "input_gst_report", None, {"rows": len(rows)})
+    session.commit()
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="input-gst.csv"'},
+    )
 
 
 @router.get("/reports/stock-valuation")

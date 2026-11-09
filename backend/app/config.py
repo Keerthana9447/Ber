@@ -22,8 +22,22 @@ class Settings(BaseSettings):
     refresh_token_days: int = Field(default=7, ge=1, le=90)
     login_max_attempts: int = Field(default=5, ge=1, le=20)
     login_lockout_minutes: int = Field(default=15, ge=1, le=1440)
+    password_reset_minutes: int = Field(default=30, ge=5, le=1440)
+    notification_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from_email: str | None = None
+    smtp_starttls: bool = True
+    public_app_url: str = "http://localhost:5173"
     log_level: str = "INFO"
     expense_upload_dir: Path = PROJECT_ROOT / "data" / "expense-receipts"
+
+    @property
+    def smtp_configured(self) -> bool:
+        credentials_complete = bool(self.smtp_username) == bool(self.smtp_password)
+        return bool(self.smtp_host and self.smtp_from_email and credentials_complete)
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

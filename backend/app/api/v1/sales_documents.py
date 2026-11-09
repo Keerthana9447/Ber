@@ -690,7 +690,12 @@ def confirm_order(
     user: Annotated[User, Depends(require_permissions("sales:approve"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    order = session.scalar(select(SalesOrder).where(SalesOrder.id == order_id).with_for_update())
+    order = session.scalar(
+        select(SalesOrder).where(
+            SalesOrder.id == order_id,
+            dealer_customer_scope(user, SalesOrder.customer_id),
+        ).with_for_update()
+    )
     if order is None:
         raise HTTPException(status_code=404, detail="Sales order not found")
     if order.status != "draft":
@@ -721,7 +726,12 @@ def cancel_order(
     user: Annotated[User, Depends(require_permissions("sales:approve"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    order = session.scalar(select(SalesOrder).where(SalesOrder.id == order_id).with_for_update())
+    order = session.scalar(
+        select(SalesOrder).where(
+            SalesOrder.id == order_id,
+            dealer_customer_scope(user, SalesOrder.customer_id),
+        ).with_for_update()
+    )
     if order is None:
         raise HTTPException(status_code=404, detail="Sales order not found")
     if order.status not in {"draft", "confirmed", "partially_delivered"}:
@@ -796,7 +806,12 @@ def create_challan(
     user: Annotated[User, Depends(require_permissions("sales:update"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    order = session.scalar(select(SalesOrder).where(SalesOrder.id == order_id).with_for_update())
+    order = session.scalar(
+        select(SalesOrder).where(
+            SalesOrder.id == order_id,
+            dealer_customer_scope(user, SalesOrder.customer_id),
+        ).with_for_update()
+    )
     if order is None:
         raise HTTPException(status_code=404, detail="Sales order not found")
     if order.status not in {"confirmed", "partially_delivered"}:
@@ -890,7 +905,12 @@ def dispatch_challan(
     user: Annotated[User, Depends(require_permissions("sales:update"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    challan = session.scalar(select(DeliveryChallan).where(DeliveryChallan.id == challan_id).with_for_update())
+    challan = session.scalar(
+        select(DeliveryChallan).where(
+            DeliveryChallan.id == challan_id,
+            dealer_customer_scope(user, DeliveryChallan.customer_id),
+        ).with_for_update()
+    )
     if challan is None:
         raise HTTPException(status_code=404, detail="Delivery challan not found")
     if challan.status != "draft":
@@ -909,12 +929,22 @@ def deliver_challan(
     user: Annotated[User, Depends(require_permissions("sales:update"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    challan = session.scalar(select(DeliveryChallan).where(DeliveryChallan.id == challan_id).with_for_update())
+    challan = session.scalar(
+        select(DeliveryChallan).where(
+            DeliveryChallan.id == challan_id,
+            dealer_customer_scope(user, DeliveryChallan.customer_id),
+        ).with_for_update()
+    )
     if challan is None:
         raise HTTPException(status_code=404, detail="Delivery challan not found")
     if challan.status != "dispatched":
         raise HTTPException(status_code=409, detail="Only dispatched delivery challans can be marked delivered")
-    order = session.scalar(select(SalesOrder).where(SalesOrder.id == challan.sales_order_id).with_for_update())
+    order = session.scalar(
+        select(SalesOrder).where(
+            SalesOrder.id == challan.sales_order_id,
+            dealer_customer_scope(user, SalesOrder.customer_id),
+        ).with_for_update()
+    )
     if order is None:
         raise HTTPException(status_code=409, detail="Sales order no longer exists")
     old = {"status": challan.status}
@@ -941,7 +971,12 @@ def cancel_challan(
     user: Annotated[User, Depends(require_permissions("sales:update"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    challan = session.scalar(select(DeliveryChallan).where(DeliveryChallan.id == challan_id).with_for_update())
+    challan = session.scalar(
+        select(DeliveryChallan).where(
+            DeliveryChallan.id == challan_id,
+            dealer_customer_scope(user, DeliveryChallan.customer_id),
+        ).with_for_update()
+    )
     if challan is None:
         raise HTTPException(status_code=404, detail="Delivery challan not found")
     if challan.status not in {"draft", "dispatched"}:
@@ -961,7 +996,12 @@ def convert_order_to_invoice(
     session: Annotated[Session, Depends(get_db)],
     warehouse_id: int | None = Query(default=None, gt=0),
 ) -> dict[str, object]:
-    order = session.scalar(select(SalesOrder).where(SalesOrder.id == order_id).with_for_update())
+    order = session.scalar(
+        select(SalesOrder).where(
+            SalesOrder.id == order_id,
+            dealer_customer_scope(user, SalesOrder.customer_id),
+        ).with_for_update()
+    )
     if order is None:
         raise HTTPException(status_code=404, detail="Sales order not found")
     if order.status not in {"partially_delivered", "delivered"}:

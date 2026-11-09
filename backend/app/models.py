@@ -863,6 +863,20 @@ class Notification(Base):
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('FALSE'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('now()'))
 
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    notification_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('notifications.id', ondelete='CASCADE'), nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    email_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    next_email_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('now()'))
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    email_last_error: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        CheckConstraint(text('email_attempts >= 0')),
+        PrimaryKeyConstraint('notification_id', 'user_id'),
+    )
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
@@ -913,6 +927,7 @@ Index('jel_acct_ix', JournalEntryLine.account_code, unique=False)
 Index('jel_entry_ix', JournalEntryLine.entry_id, unique=False)
 Index('inventory_opening_valuation_time_ix', InventoryOpeningValuation.created_at.desc(), unique=False)
 Index('notif_user_ix', Notification.user_id, Notification.is_read, Notification.created_at.desc(), unique=False)
+Index('notification_delivery_user_ix', NotificationDelivery.user_id, NotificationDelivery.read_at, NotificationDelivery.notification_id.desc(), unique=False)
 Index('audit_entity_ix', AuditLog.entity_type, AuditLog.entity_id, unique=False)
 Index('audit_time_ix', AuditLog.created_at.desc(), unique=False)
 Index('payment_reversal_uq', Payment.reverses_payment_id, unique=True, postgresql_where=text('reverses_payment_id IS NOT NULL'))

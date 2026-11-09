@@ -474,6 +474,16 @@ CREATE TABLE notifications (
   kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT, link TEXT,
   is_read BOOLEAN NOT NULL DEFAULT FALSE, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE INDEX notif_user_ix ON notifications (user_id, is_read, created_at DESC);
+CREATE TABLE notification_deliveries (
+  notification_id BIGINT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_at TIMESTAMPTZ,
+  email_attempts INT NOT NULL DEFAULT 0 CHECK (email_attempts >= 0),
+  next_email_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  email_sent_at TIMESTAMPTZ, email_last_error TEXT,
+  PRIMARY KEY (notification_id, user_id));
+CREATE INDEX notification_delivery_user_ix
+  ON notification_deliveries (user_id, read_at, notification_id DESC);
 CREATE TABLE audit_logs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT REFERENCES users(id), action TEXT NOT NULL,

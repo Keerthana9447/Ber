@@ -165,6 +165,18 @@ def _customer(session: Session, customer_id: int) -> Customer:
     return customer
 
 
+def _require_customer_scope(session: Session, user: User, customer_id: int) -> Customer:
+    customer = session.scalar(
+        select(Customer).where(
+            Customer.id == customer_id,
+            dealer_customer_scope(user, Customer.id),
+        )
+    )
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+    return customer
+
+
 def _normalize_lines(
     session: Session,
     lines: list[InvoiceLineWrite],
@@ -636,7 +648,7 @@ def preview_invoice(
     user: Annotated[User, Depends(_require_sales_preview_permission)],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    del user
+    _require_customer_scope(session, user, body.customer_id)
     _customer_obj, _settings, _result, _details, response = _calculate(
         session,
         body.customer_id,
@@ -716,6 +728,7 @@ def create_invoice_draft(
     user: Annotated[User, Depends(require_permissions("sales:create"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
+    _require_customer_scope(session, user, body.customer_id)
     customer, settings, result, details, preview = _calculate(
         session,
         body.customer_id,
@@ -763,11 +776,17 @@ def update_invoice_draft(
     user: Annotated[User, Depends(require_permissions("sales:update"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id).with_for_update())
+    invoice = session.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        ).with_for_update()
+    )
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     if invoice.status != "draft":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only draft invoices can be edited")
+    _require_customer_scope(session, user, body.customer_id)
     customer, settings, result, details, preview = _calculate(
         session,
         body.customer_id,
@@ -811,7 +830,12 @@ def delete_invoice_draft(
     user: Annotated[User, Depends(require_permissions("sales:update"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> None:
-    invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id).with_for_update())
+    invoice = session.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        ).with_for_update()
+    )
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     if invoice.status != "draft":
@@ -979,7 +1003,12 @@ def approve_invoice(
     user: Annotated[User, Depends(require_permissions("sales:approve"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id).with_for_update())
+    invoice = session.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        ).with_for_update()
+    )
     if invoice is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     if invoice.doc_type == "proforma":
@@ -1005,7 +1034,12 @@ def issue_invoice(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key", max_length=200)] = None,
 ) -> dict[str, object]:
     try:
-        invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id).with_for_update())
+        invoice = session.scalar(
+            select(Invoice).where(
+                Invoice.id == invoice_id,
+                dealer_customer_scope(user, Invoice.customer_id),
+            ).with_for_update()
+        )
         if invoice is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
         old_values = _invoice_snapshot(invoice)
@@ -1248,7 +1282,12 @@ def cancel_invoice(
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
     try:
-        invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id).with_for_update())
+        invoice = session.scalar(
+            select(Invoice).where(
+                Invoice.id == invoice_id,
+                dealer_customer_scope(user, Invoice.customer_id),
+            ).with_for_update()
+        )
         if invoice is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
         if invoice.doc_type == "proforma":
@@ -1380,7 +1419,12 @@ def convert_proforma_to_tax_invoice(
     user: Annotated[User, Depends(require_permissions("sales:create"))],
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
-    original = session.get(Invoice, invoice_id)
+    original = session.scalar(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            dealer_customer_scope(user, Invoice.customer_id),
+        )
+    )
     if original is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found")
     if original.doc_type != "proforma" or original.status != "draft":

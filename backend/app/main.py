@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.db.session import create_database_engine, create_session_factory
 from app.logging_config import configure_logging
+from app.services.notifications import process_notification_batch
 
 logger = logging.getLogger("berev.api")
 
@@ -26,8 +28,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-        yield
-        engine.dispose()
+        stopping = asyncio.Event()
+
+        async def run_scheduler() -> None:
+            while not stopping.is_set():
+                try:
+                    await asyncio.to_thread(
+                        process_notification_batch,
+                        app.state.session_factory,
+                        configured,
+                    )
+                except Exception as error:
+                    logger.error(
+                        "notification_scheduler_failed",
+                        extra={"error_type": type(error).__name__},
+                    )
+                try:
+                    await asyncio.wait_for(
+                        stopping.wait(),
+                        timeout=configured.notification_interval_seconds,
+                    )
+                except TimeoutError:
+                    pass
+
+        scheduler_task = asyncio.create_task(run_scheduler())
+        app.state.notification_scheduler_task = scheduler_task
+        try:
+            yield
+        finally:
+            stopping.set()
+            await scheduler_task
+            engine.dispose()
 
     app = FastAPI(title=configured.app_name, lifespan=lifespan)
     app.state.settings = configured

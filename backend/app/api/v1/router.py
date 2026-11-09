@@ -15,6 +15,7 @@ from app.api.v1.purchases import router as purchases_router
 from app.api.v1.expenses import router as expenses_router
 from app.api.v1.accounting_reports import router as accounting_reports_router
 from app.api.v1.dealer_portal import router as dealer_portal_router
+from app.api.v1.admin import router as admin_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
@@ -32,3 +33,4 @@ api_router.include_router(purchases_router)
 api_router.include_router(expenses_router)
 api_router.include_router(accounting_reports_router)
 api_router.include_router(dealer_portal_router)
+api_router.include_router(admin_router)

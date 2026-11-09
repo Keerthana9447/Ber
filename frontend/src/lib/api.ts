@@ -167,7 +167,7 @@ export async function api<T = unknown>(path: string, options: Options = {}, allo
 }
 
 export async function apiBlob(path: string, allowRetry = true): Promise<Blob> {
-  const headers: Record<string, string> = { Accept: "application/pdf" };
+  const headers: Record<string, string> = { Accept: "*/*" };
   if (accessToken) headers.Authorization = ["Bearer", accessToken].join(" ");
   let response: Response;
   try {

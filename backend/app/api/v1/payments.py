@@ -499,6 +499,14 @@ def create_payment(
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
     try:
+        customer = session.scalar(
+            select(Customer).where(
+                Customer.id == body.customer_id,
+                dealer_customer_scope(user, Customer.id),
+            )
+        )
+        if customer is None:
+            raise HTTPException(status_code=404, detail="Customer not found")
         payment = _record_receipt(session, request, body, user.id)
     except HTTPException:
         session.rollback()
@@ -571,9 +579,12 @@ def create_refund(
                 Customer.id == body.customer_id,
                 Customer.deleted_at.is_(None),
                 Customer.is_active.is_(True),
+                dealer_customer_scope(user, Customer.id),
             )
         )
         if customer is None:
+            if user.role.name == "Dealer / Distributor":
+                raise HTTPException(status_code=404, detail="Customer not found")
             raise HTTPException(status_code=422, detail="Active customer not found")
         method = session.scalar(
             select(PaymentMethod).where(
@@ -709,7 +720,12 @@ def reverse_payment(
     session: Annotated[Session, Depends(get_db)],
 ) -> dict[str, object]:
     try:
-        original = session.scalar(select(Payment).where(Payment.id == payment_id).with_for_update())
+        original = session.scalar(
+            select(Payment).where(
+                Payment.id == payment_id,
+                dealer_customer_scope(user, Payment.customer_id),
+            ).with_for_update()
+        )
         if original is None:
             raise HTTPException(status_code=404, detail="Payment not found")
         if original.status != "recorded" or original.direction not in {"in", "out"}:
@@ -959,8 +975,15 @@ def create_credit_note(
         reason = body.reason.strip()
         if len(reason) < 10:
             raise HTTPException(status_code=422, detail="Credit note reason must be at least 10 characters")
-        invoice = session.scalar(select(Invoice).where(Invoice.id == body.invoice_id).with_for_update())
-        if invoice is None or invoice.status != "issued" or invoice.doc_type == "proforma":
+        invoice = session.scalar(
+            select(Invoice).where(
+                Invoice.id == body.invoice_id,
+                dealer_customer_scope(user, Invoice.customer_id),
+            ).with_for_update()
+        )
+        if invoice is None:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        if invoice.status != "issued" or invoice.doc_type == "proforma":
             raise HTTPException(status_code=409, detail="Credit notes require an issued tax invoice or bill of supply")
         ids = [line.invoice_item_id for line in body.lines]
         if len(set(ids)) != len(ids):
