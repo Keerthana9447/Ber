@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import OperationalError
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
@@ -98,7 +99,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await scheduler_task
             engine.dispose()
 
-    app = FastAPI(title=configured.app_name, lifespan=lifespan)
+    production = configured.environment == "production"
+    app = FastAPI(
+        title=configured.app_name,
+        lifespan=lifespan,
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
+    if configured.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(configured.cors_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "Accept"],
+        )
     app.state.settings = configured
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
@@ -141,6 +157,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Response:
         started = time.perf_counter()
         response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), geolocation=(), microphone=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        )
+        if production:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         logger.info(
             "http_request",
             extra={

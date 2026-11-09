@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, buildUrl, isEndpointMissing, messageFromDetail, tokenStore } from "./api";
+import { ApiError, api, apiAllPages, buildUrl, isEndpointMissing, messageFromDetail, tokenStore } from "./api";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -45,6 +45,25 @@ describe("api helpers", () => {
     await expect(api("/customers")).resolves.toEqual({ done: true });
     expect(spy).toHaveBeenCalledTimes(3);
     expect(tokenStore.getRefresh()).toBe("r2");
+  });
+  it("loads every page without exceeding the API page-size limit", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input), "http://testserver");
+      const page = Number(url.searchParams.get("page"));
+      const pageSize = Number(url.searchParams.get("page_size"));
+      expect(pageSize).toBe(100);
+      return json(200, {
+        items: Array.from({ length: page === 3 ? 5 : pageSize }, (_, index) => (page - 1) * pageSize + index + 1),
+        total: 205,
+      });
+    });
+
+    const result = await apiAllPages<number>("/customers", { query: { is_active: true } });
+    expect(result.total).toBe(205);
+    expect(result.items).toHaveLength(205);
+    expect(result.items[0]).toBe(1);
+    expect(result.items[204]).toBe(205);
+    expect(spy).toHaveBeenCalledTimes(3);
   });
   it("reports an unreachable server clearly", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));

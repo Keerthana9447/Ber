@@ -6,7 +6,7 @@ import { z } from "zod";
 import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, LoadingState, Modal, useToast } from "../components/ui";
 import { InvoiceReadinessBanner } from "../components/InvoiceReadinessBanner";
-import { api, apiBlob, ApiError } from "../lib/api";
+import { api, apiAllPages, apiBlob, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatINR } from "../lib/format";
 
@@ -355,7 +355,7 @@ function InvoiceLineEditor({
   const productId = useWatch({ control: form.control, name: `lines.${index}.product_id` });
   const products = useQuery({
     queryKey: ["invoice-products", productSearch],
-    queryFn: ({ signal }) => api<{ items: Product[] }>("/products", { query: { page: 1, page_size: 100, q: productSearch }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Product>("/products", { query: { q: productSearch }, signal }),
     retry: false,
   });
   const listedProduct = products.data?.items.find((product) => String(product.id) === productId);
@@ -503,7 +503,7 @@ function InvoiceDraftEditor({
   const selectedCustomerId = useWatch({ control: form.control, name: "customer_id" });
   const customers = useQuery({
     queryKey: ["invoice-customers", customerSearch],
-    queryFn: ({ signal }) => api<{ items: Customer[] }>("/customers", { query: { page: 1, page_size: 100, q: customerSearch, is_active: true }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Customer>("/customers", { query: { q: customerSearch, is_active: true }, signal }),
     retry: false,
   });
   const listedCustomer = customers.data?.items.find((item) => String(item.id) === selectedCustomerId);
@@ -756,6 +756,7 @@ export function InvoicesPage() {
   const toast = useToast();
   const { can } = useAuth();
   const [invoiceStatus, setInvoiceStatus] = useState("");
+  const [invoicePage, setInvoicePage] = useState(1);
   const [editId, setEditId] = useState<number | null>(null);
   const [viewId, setViewId] = useState<number | null>(null);
   const [newDraft, setNewDraft] = useState(false);
@@ -780,8 +781,8 @@ export function InvoicesPage() {
   useEffect(() => setReady(!!readiness.data?.ready && !readiness.isError), [readiness.data, readiness.isError]);
 
   const list = useQuery({
-    queryKey: ["invoices", "list", invoiceStatus],
-    queryFn: ({ signal }) => api<InvoicePageData>("/invoices", { query: { page: 1, page_size: 100, status: invoiceStatus }, signal }),
+    queryKey: ["invoices", "list", invoiceStatus, invoicePage],
+    queryFn: ({ signal }) => api<InvoicePageData>("/invoices", { query: { page: invoicePage, page_size: 20, status: invoiceStatus }, signal }),
     retry: false,
   });
   const detail = useQuery({
@@ -886,7 +887,7 @@ export function InvoicesPage() {
       </div>
       <InvoiceReadinessBanner />
       <div className="flex justify-end">
-        <select aria-label="Filter invoices by status" value={invoiceStatus} onChange={(event) => setInvoiceStatus(event.target.value)} className="rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm">
+        <select aria-label="Filter invoices by status" value={invoiceStatus} onChange={(event) => { setInvoiceStatus(event.target.value); setInvoicePage(1); }} className="rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm">
           <option value="">All statuses</option><option value="draft">Draft</option><option value="approved">Approved</option><option value="issued">Issued</option><option value="cancelled">Cancelled</option>
         </select>
       </div>
@@ -923,6 +924,17 @@ export function InvoicesPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {list.data && list.data.total > 20 && (
+          <div className="flex items-center justify-between border-t border-ivory-200 p-4 text-sm">
+            <span className="text-slate-500">
+              Showing {(invoicePage - 1) * 20 + 1}–{Math.min(invoicePage * 20, list.data.total)} of {list.data.total}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="secondary" disabled={invoicePage === 1 || list.isFetching} onClick={() => setInvoicePage((page) => page - 1)}>Previous</Button>
+              <Button variant="secondary" disabled={invoicePage * 20 >= list.data.total || list.isFetching} onClick={() => setInvoicePage((page) => page + 1)}>Next</Button>
+            </div>
           </div>
         )}
       </Card>

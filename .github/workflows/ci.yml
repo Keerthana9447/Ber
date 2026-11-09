@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_ADMIN_PASSWORD: ci-only-owner-password
+      BEREV_APP_PASSWORD: ci-only-app-password
+      JWT_SECRET_KEY: ci-only-jwt-secret-key-that-is-at-least-32-bytes
+      ACME_EMAIL: ci@example.invalid
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: docker compose -f docker-compose.prod.yml config -q
+      - name: Validate deployment shell scripts
+        run: |
+          for script in deploy/postgres/init-app-user.sh deploy/backup/backup-loop.sh deploy/backup/restore-drill.sh; do
+            sh -n "$script"
+          done
+      - name: Build deployment images
+        run: docker compose -f docker-compose.prod.yml build api frontend
+
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: berev_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d berev_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:ci-only-password@127.0.0.1:5432/berev_test
+      BEREV_TEST_DATABASE_URL: postgresql+psycopg://postgres:ci-only-password@127.0.0.1:5432/berev_test
+      REQUIRE_DB_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - name: Install backend and test dependencies
+        run: python -m pip install -r backend/requirements-dev.txt
+      - name: Upgrade test schema
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Run strict backend suite
+        run: python -m pytest backend/tests -q
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install pip-audit
+          pip-audit -r backend/requirements.txt
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high

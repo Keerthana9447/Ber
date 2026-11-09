@@ -142,14 +142,20 @@ def run_checks(base_url: str, email: str | None, password: str | None, productio
     # ---- hardening observations (WARN = known gap, not a crash)
     _, headers, _ = http("GET", f"{api}/health")
     lowered = {k.lower() for k in headers}
-    for header in ("x-content-type-options", "x-frame-options", "referrer-policy"):
+    for header in (
+        "x-content-type-options",
+        "x-frame-options",
+        "referrer-policy",
+        "content-security-policy",
+        "permissions-policy",
+    ):
         r.add("PASS" if header in lowered else "WARN", f"security header {header}",
               "" if header in lowered else "missing (set it in the reverse proxy or app)")
     if base_url.lower().startswith("https://"):
         r.add("PASS" if "strict-transport-security" in lowered else "WARN", "HSTS header")
     else:
         r.add("WARN" if production else "PASS", "HTTPS", "base URL is not https" if production else "dev/staging over http")
-    for path in ("/docs", "/openapi.json"):
+    for path in ("/docs", "/redoc", "/openapi.json"):
         status, _, _ = http("GET", base_url.rstrip("/") + path)
         exposed = status == 200
         r.add("WARN" if (exposed and production) else "PASS", f"API docs {path}", "publicly reachable" if exposed else "not exposed")

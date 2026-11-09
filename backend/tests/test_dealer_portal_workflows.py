@@ -152,6 +152,55 @@ class DealerPortalWorkflowTests(unittest.TestCase):
             with self.factory.begin() as session:
                 session.execute(update(User).where(User.id == user_id).values(is_active=False))
 
+    def test_dealer_cannot_read_internal_product_catalog_or_serials(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        with self.factory.begin() as session:
+            role = session.scalar(select(Role).where(Role.name == "Dealer / Distributor"))
+            self.assertIsNotNone(role)
+            customer = Customer(
+                code=f"CAT-DL-{suffix}",
+                name=f"Catalog dealer {suffix}",
+                customer_type="dealer",
+            )
+            session.add(customer)
+            session.flush()
+            dealer = Dealer(dealer_code=f"CAT-DL-{suffix}", customer_id=customer.id)
+            session.add(dealer)
+            session.flush()
+            user = User(
+                email=f"catalog-dealer-{suffix.lower()}@example.test",
+                full_name="Catalog access test",
+                password_hash=hash_password(uuid.uuid4().hex),
+                role_id=role.id,
+                dealer_id=dealer.id,
+                must_change_password=False,
+            )
+            session.add(user)
+            session.flush()
+            user_id = user.id
+
+        headers = {
+            "Authorization": f"Bearer {create_token_pair(self.settings, user_id).access_token}"
+        }
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                for path in ("/api/v1/products", "/api/v1/products/1", "/api/v1/products/1/serials"):
+                    response = await client.get(path, headers=headers)
+                    self.assertEqual(response.status_code, 403, response.text)
+
+                portal = await client.get("/api/v1/dealer/portal/products", headers=headers)
+                self.assertEqual(portal.status_code, 200, portal.text)
+
+        try:
+            asyncio.run(exercise_api())
+        finally:
+            with self.factory.begin() as session:
+                session.execute(update(User).where(User.id == user_id).values(is_active=False))
+
     def test_server_pricing_status_and_dealer_isolation(self):
         suffix = uuid.uuid4().hex[:8].upper()
         extra_permissions = {

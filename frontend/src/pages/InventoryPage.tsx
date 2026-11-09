@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Plus, Search } from "lucide-react";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, LoadingState, Modal, useToast } from "../components/ui";
-import { api } from "../lib/api";
+import { api, apiAllPages } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatCount } from "../lib/format";
 
@@ -29,7 +29,6 @@ type InventoryRow = {
   low_stock: boolean;
 };
 type InventoryPageData = { items: InventoryRow[]; total: number };
-type ProductPageData = { items: Product[]; total: number };
 type ProductOptions = { warehouses: Warehouse[] };
 type UnvaluedInventory = {
   product_id: number;
@@ -105,11 +104,7 @@ export function InventoryPage() {
 
   const products = useQuery({
     queryKey: ["inventory-adjustment-products", productSearch],
-    queryFn: ({ signal }) =>
-      api<ProductPageData>("/products", {
-        query: { page: 1, page_size: 100, q: productSearch },
-        signal,
-      }),
+    queryFn: ({ signal }) => apiAllPages<Product>("/products", { query: { q: productSearch }, signal }),
     enabled: adjustmentOpen && canManage,
     retry: false,
   });

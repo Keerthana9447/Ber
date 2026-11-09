@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +34,7 @@ class Settings(BaseSettings):
     smtp_from_email: str | None = None
     smtp_starttls: bool = True
     public_app_url: str = "http://localhost:5173"
+    cors_allowed_origins: str = ""
     log_level: str = "INFO"
     expense_upload_dir: Path = PROJECT_ROOT / "data" / "expense-receipts"
 
@@ -68,6 +70,29 @@ class Settings(BaseSettings):
         if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("LOG_LEVEL must be a standard Python logging level")
         return normalized
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def validate_cors_allowed_origins(cls, value: str) -> str:
+        origins = [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
+        for origin in origins:
+            parsed = urlsplit(origin)
+            if (
+                origin == "*"
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or parsed.username
+                or parsed.password
+            ):
+                raise ValueError("CORS_ALLOWED_ORIGINS must contain comma-separated HTTP(S) origins")
+        return ",".join(dict.fromkeys(origins))
+
+    @property
+    def cors_origins(self) -> tuple[str, ...]:
+        return tuple(origin for origin in self.cors_allowed_origins.split(",") if origin)
 
 
 @lru_cache

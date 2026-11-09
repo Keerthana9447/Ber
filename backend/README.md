@@ -6,11 +6,13 @@ The backend combines the existing pure-Python domain core with a FastAPI applica
 
 From the project root, copy `.env.example` to `.env` and set local values there. Do not commit `.env` or put real credentials in source code.
 
-Install the exact dependency versions recorded in `backend/requirements.txt`:
+Install the exact runtime and test dependency versions recorded in `backend/requirements-dev.txt`:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt
 ```
+
+`requirements.txt` contains runtime dependencies only; CI and local test environments should use `requirements-dev.txt`.
 
 Run the API from `backend` after configuring `DATABASE_URL` and a random `JWT_SECRET_KEY` in the root `.env`:
 

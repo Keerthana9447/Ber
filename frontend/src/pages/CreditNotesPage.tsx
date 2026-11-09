@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, LoadingState, useToast } from "../components/ui";
-import { api, apiBlob } from "../lib/api";
+import { api, apiAllPages, apiBlob } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatINR } from "../lib/format";
 
@@ -47,7 +47,7 @@ export function CreditNotesPage() {
 
   const invoices = useQuery({
     queryKey: ["invoices", "issued-options"],
-    queryFn: ({ signal }) => api<Page<Invoice>>("/invoices", { query: { status: "issued", page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Invoice>("/invoices", { query: { status: "issued" }, signal }),
     retry: false,
   });
   const selectedInvoice = useQuery({

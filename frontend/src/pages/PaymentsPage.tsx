@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, LoadingState, useToast } from "../components/ui";
-import { api, apiBlob } from "../lib/api";
+import { api, apiAllPages, apiBlob } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatINR } from "../lib/format";
 
@@ -49,7 +49,7 @@ export function PaymentsPage() {
 
   const customers = useQuery({
     queryKey: ["customers", "payment-options"],
-    queryFn: ({ signal }) => api<Page<Customer>>("/customers", { query: { page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Customer>("/customers", { signal }),
     retry: false,
   });
   const methods = useQuery({
@@ -59,7 +59,7 @@ export function PaymentsPage() {
   });
   const suppliers = useQuery({
     queryKey: ["suppliers", "payment-options"],
-    queryFn: ({ signal }) => api<Page<Supplier>>("/suppliers", { query: { page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Supplier>("/suppliers", { signal }),
     enabled: mode === "supplier",
     retry: false,
   });
@@ -76,7 +76,7 @@ export function PaymentsPage() {
   });
   const invoices = useQuery({
     queryKey: ["invoices", "payment-options"],
-    queryFn: ({ signal }) => api<Page<InvoiceOption>>("/invoices", { query: { status: "issued", page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<InvoiceOption>("/invoices", { query: { status: "issued" }, signal }),
     retry: false,
   });
 

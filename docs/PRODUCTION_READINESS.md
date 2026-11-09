@@ -4,6 +4,17 @@ Built from the repository's own `KNOWN_GAPS.md`, `CHANGES.md` and a read of the 
 `[x]` = evidence exists in the repo (named below). `[ ]` = open. **Nothing here claims the system is production-ready.**
 Owner: **Agent** = code the IDE agent can write and test; **You** = needs a person, an account, a server or a decision.
 
+## Follow-up hardening snapshot (2026-11-09)
+
+- Added production-mode API docs lockdown, explicit CORS allow-list validation, and API security headers; added tests. These changes have not been deployed to the running local API.
+- Fixed the reviewed dealer access-control issue: dealer accounts can use the scoped dealer catalog, not the internal product/serial endpoints.
+- Moved `pytest` to `backend/requirements-dev.txt`; added a PostgreSQL-backed CI workflow, dependency audits, pagination coverage, a mocked Playwright dealer sign-in, and a React text-escaping test.
+- Local verification: 83 backend tests passed and 22 database-dependent tests were skipped because no test-only database URL was configured; 28 frontend tests and one Playwright test passed; `npm audit` reported zero vulnerabilities. The Python dependency audit is still pending.
+- A read-only scan of the two available commits found non-empty username/password fields in `DATABASE_URL` and `TEST_DATABASE_URL` in the initial commit `38602e0`. Values are intentionally not reproduced here. Treat them as exposed: rotate the database credentials and authorize a history purge before sharing/pushing further commits. The branch tip is sanitized; Git history is not.
+- The production-like validator against the already-running local API reported 16 passes, 8 warnings and 0 failures. It used no staging credentials or database checks and exercised the currently running app, not these un-deployed changes.
+- Deployment, Traefik per-IP rate limits/security headers, database/receipt backup scripts, and an isolated restore-drill profile are now present. They have not been run because Docker is unavailable in this environment; encrypted off-host backup replication and a real restore drill remain release gates.
+- The local browser smoke test only navigated 12 modules and observed no UI alerts; it is not accounting acceptance.
+
 ## 0. Release gate: all of these must be true before real invoices are issued
 - [ ] Every section below is `[x]`, or the exception is written down and accepted by the owner of the business.
 - [ ] `python scripts/staging_validate.py --base-url <staging> --db-checks --production-like` ends with **0 failed, 0 warnings** on a staging copy that mirrors production.
@@ -16,22 +27,22 @@ Owner: **Agent** = code the IDE agent can write and test; **You** = needs a pers
 - [x] Database test config refuses anything except `berev_test` (`tests/test_database_test_config.py`); `REQUIRE_DB_TESTS=1` turns skips into failures.
 - [x] Frontend: 27 tests, type-check and production build pass (reported 2026-11-09).
 - [ ] Run this patch's new tests on PostgreSQL: `tests/test_preflight.py`, `tests/test_resilience.py`, `tests/test_staging_validate.py`. **Agent/You**
-- [ ] Playwright end-to-end tests for the 15 scenarios in `BEREV_MASTER_PROMPT.md` section 21. **Agent**
-- [ ] CI pipeline that runs backend (strict), frontend, build and migration tests on every commit. **Agent**
+- [ ] Full Playwright end-to-end tests for the 15 scenarios in `BEREV_MASTER_PROMPT.md` section 21. **Agent** (one mocked dealer-login smoke test exists)
+- [x] CI workflow for strict PostgreSQL backend, frontend tests/build, browser smoke tests and dependency audits (`.github/workflows/ci.yml`). **Not yet run on GitHub**
 
 ## 2. Security (nothing here has a test campaign yet)
 - [x] Argon2 password hashing, JWT with refresh-token rotation and revocation, per-account lockout (PostgreSQL-tested).
 - [x] Dealer isolation test (one dealer cannot read another's records by URL) passes on PostgreSQL.
 - [ ] **Manual** two-dealer browser check of isolation. **You**
-- [ ] Request/IP rate limiting (only per-account lockout exists). **Agent**
-- [ ] CORS policy: serve the UI and the API from one origin through the reverse proxy, or add an explicit allow-list. **Agent**
-- [ ] Security headers (`X-Content-Type-Options`, `X-Frame-Options`/CSP, `Referrer-Policy`, HSTS over HTTPS) via proxy or app. **Agent**
-- [ ] Disable `/docs` and `/openapi.json` in production, or put them behind login. **Agent**
+- [x] Request/IP rate limiting is configured in Traefik (120 API requests/minute, burst 20; 10 login requests/minute, burst 3). **Not runtime-validated; assumes direct client access to Traefik**
+- [x] CORS origin allow-list and validation (`CORS_ALLOWED_ORIGINS`); no wildcard credentials.
+- [x] API security headers and production-only HSTS; reverse-proxy CSP/routing configuration remains incomplete.
+- [x] `/docs`, `/redoc` and `/openapi.json` are disabled when `ENVIRONMENT=production`.
 - [ ] Log redaction review and a request-id on every log line (the formatter supports `request_id`; nothing sets it). **Agent**
-- [ ] `pip-audit` and `npm audit` run and each finding fixed or accepted in writing. **Agent**
-- [ ] SQL-injection and XSS tests on search and free-text fields; upload tests beyond size/signature (e.g. polyglot files). **Agent**
+- [ ] `pip-audit` and `npm audit` run and each finding fixed or accepted in writing. **Agent** (`npm audit` has 0 findings; Python audit pending)
+- [ ] SQL-injection and XSS tests on search and free-text fields; upload tests beyond size/signature (e.g. polyglot files). **Agent** (tests added; database-backed injection test not run)
 - [ ] Production secrets (`JWT_SECRET_KEY`, DB password, webhook secret, SMTP) generated fresh, stored outside the repo, with a rotation procedure. **You**
-- [ ] Scan git history for secrets before the repository is ever pushed or shared (an earlier `.env.example` held real-looking values). **Agent**
+- [x] Scan available Git history for secrets. **Found exposed database credentials in the initial `.env.example`; rotate them and authorize history rewriting before further sharing.**
 
 ## 3. Data integrity and accounting
 - [x] Invoice numbering concurrency, gapless series, rollback, stock never negative, journal balance and reversals (PostgreSQL-tested).
@@ -41,14 +52,14 @@ Owner: **Agent** = code the IDE agent can write and test; **You** = needs a pers
 - [ ] Opening stock valuation entered from real purchase bills, reconciled to physical stock count. **You**
 - [ ] Remaining reports and exports (aging, purchase exports), purchase cancellation/return reversal, dealer order creation, sales returns. **Agent** (see `KNOWN_GAPS.md` "Still not implemented")
 
-## 4. Operations (none of this exists in the repo yet)
-- [ ] `Dockerfile` for the backend (non-root), frontend build served by a reverse proxy with HTTPS, `docker-compose.prod.yml`, `.env.example` with placeholders only. **Agent**
+## 4. Operations
+- [ ] Complete and validate backend/frontend Docker deployment, HTTPS reverse proxy and per-IP rate limits. **Configuration and CI build check added; Docker runtime, certificate issuance and rate-limit behavior not validated locally**
 - [ ] Production database: managed PostgreSQL or a hardened server, private network, least-privilege role (`berev_app`, not superuser). **You**
 - [ ] Domain name and TLS certificate with auto-renewal. **You**
 - [ ] Migration-on-deploy procedure and a tested rollback (restore from backup; most downgrades are not data-safe). **Agent writes, You rehearse**
-- [ ] Automated `pg_dump` backups, off-machine copy, retention policy. **Agent writes, You run**
-- [ ] **Restore drill**: restore the latest backup into a scratch database, run `python -m app.cli preflight` and `verify-integrity` on it, record the result. **You**
-- [ ] Uploaded receipts (`EXPENSE_UPLOAD_DIR`) on a persistent volume that is also backed up. **You**
+- [ ] Automated `pg_dump` and receipt-volume backups, off-machine copy, retention policy. **Local backup loop added; encrypted off-host copy remains unimplemented**
+- [ ] **Restore drill** into an isolated scratch container, then run `preflight` and `verify-integrity`. **Script and isolated Compose profile added; not run because Docker is unavailable**
+- [x] Uploaded receipts (`EXPENSE_UPLOAD_DIR`) use a persistent volume and are included in local backup archives. **Off-host copy and restore execution remain open**
 - [ ] Monitoring and alerts: `/api/v1/health/ready` (added in this patch) polled every minute, disk space, backup success, error-rate, `notification_scheduler_failed` log lines. **You**
 - [ ] First-admin creation procedure on the production host (`python -m app.cli create-admin`), no default credentials, documented. **You**
 - [ ] Load and failover test with realistic data volume; slow-query review with `EXPLAIN`. **Agent**

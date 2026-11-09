@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, LoadingState, useToast } from "../components/ui";
-import { api, apiBlob } from "../lib/api";
+import { api, apiAllPages, apiBlob } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatINR } from "../lib/format";
 
@@ -232,13 +232,13 @@ export function PurchasingPage() {
   });
   const suppliers = useQuery({
     queryKey: ["purchases", "suppliers"],
-    queryFn: ({ signal }) => api<Page<Supplier>>("/suppliers", { query: { page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Supplier>("/suppliers", { signal }),
     enabled: canManage && showRequest,
     retry: false,
   });
   const products = useQuery({
     queryKey: ["purchases", "products"],
-    queryFn: ({ signal }) => api<Page<Product>>("/products", { query: { page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Product>("/products", { signal }),
     enabled: canManage && (showRequest || mode === "receive" || mode === "invoice" || mode === "return"),
     retry: false,
   });

@@ -115,6 +115,33 @@ class BusinessApiTests(unittest.TestCase):
         cls.app.state.engine.dispose()
         shutil.rmtree(cls.receipt_test_dir, ignore_errors=True)
 
+    def test_search_terms_are_bound_values_not_sql(self):
+        term = f"{uuid.uuid4().hex}' OR '1'='1"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                customers = await client.get(
+                    "/api/v1/customers",
+                    params={"q": term},
+                    headers=headers,
+                )
+                products = await client.get(
+                    "/api/v1/products",
+                    params={"q": term},
+                    headers=headers,
+                )
+                return customers, products
+
+        customers, products = asyncio.run(exercise_api())
+        self.assertEqual(customers.status_code, 200, customers.text)
+        self.assertEqual(products.status_code, 200, products.text)
+        self.assertEqual(customers.json()["total"], 0)
+        self.assertEqual(products.json()["total"], 0)
+
     def test_refresh_rotation_and_logout_revoke_tokens(self):
         suffix = uuid.uuid4().hex
         email = f"token-test-{suffix}@example.test"

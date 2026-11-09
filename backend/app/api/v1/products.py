@@ -31,6 +31,17 @@ from app.models import (
 router = APIRouter(tags=["products", "inventory"])
 
 
+def _require_internal_product_access(
+    user: Annotated[User, Depends(require_permissions("products:read"))],
+) -> User:
+    if user.role.name == "Dealer / Distributor":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Use the dealer catalog for product access",
+        )
+    return user
+
+
 def _trim(value: str) -> str:
     normalized = value.strip()
     if not normalized:
@@ -425,7 +436,7 @@ def create_warehouse(
 
 @router.get("/products", response_model=ProductPage)
 def list_products(
-    user: Annotated[User, Depends(require_permissions("products:read"))],
+    user: Annotated[User, Depends(_require_internal_product_access)],
     session: Annotated[Session, Depends(get_db)],
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -479,7 +490,7 @@ def create_product(
 @router.get("/products/{product_id}", response_model=ProductResponse)
 def get_product(
     product_id: int,
-    user: Annotated[User, Depends(require_permissions("products:read"))],
+    user: Annotated[User, Depends(_require_internal_product_access)],
     session: Annotated[Session, Depends(get_db)],
 ) -> ProductResponse:
     del user
@@ -492,7 +503,7 @@ def get_product(
 @router.get("/products/{product_id}/serials")
 def list_available_serials(
     product_id: int,
-    user: Annotated[User, Depends(require_permissions("products:read"))],
+    user: Annotated[User, Depends(_require_internal_product_access)],
     session: Annotated[Session, Depends(get_db)],
     q: str = Query(default="", max_length=200),
 ) -> list[dict[str, object]]:

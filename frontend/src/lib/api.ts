@@ -84,6 +84,7 @@ export function messageFromDetail(detail: unknown, fallback: string): string {
 }
 
 export type Query = Record<string, string | number | boolean | null | undefined>;
+export type ApiPage<T> = { items: T[]; total: number };
 
 export function buildUrl(path: string, query?: Query): string {
   const params = new URLSearchParams();
@@ -164,6 +165,41 @@ export async function api<T = unknown>(path: string, options: Options = {}, allo
     throw new ApiError(res.status, messageFromDetail(detail, `Request failed (${res.status})`), detail);
   }
   return payload as T;
+}
+
+export async function apiAllPages<T>(
+  path: string,
+  options: { query?: Query; signal?: AbortSignal; pageSize?: number } = {},
+): Promise<ApiPage<T>> {
+  const pageSize = options.pageSize ?? 100;
+  const query = options.query ?? {};
+  const first = await api<ApiPage<T>>(path, {
+    query: { ...query, page: 1, page_size: pageSize },
+    signal: options.signal,
+  });
+  const pageCount = Math.ceil(first.total / pageSize);
+  const remaining: T[] = [];
+
+  for (let firstPage = 2; firstPage <= pageCount; firstPage += 8) {
+    const pageNumbers = Array.from(
+      { length: Math.min(8, pageCount - firstPage + 1) },
+      (_, index) => firstPage + index,
+    );
+    const pages = await Promise.all(
+      pageNumbers.map((page) =>
+        api<ApiPage<T>>(path, {
+          query: { ...query, page, page_size: pageSize },
+          signal: options.signal,
+        }),
+      ),
+    );
+    remaining.push(...pages.flatMap((result) => result.items));
+  }
+
+  return {
+    items: [...first.items, ...remaining].slice(0, first.total),
+    total: first.total,
+  };
 }
 
 export async function apiBlob(path: string, allowRetry = true): Promise<Blob> {

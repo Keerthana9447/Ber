@@ -1,0 +1,211 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-berev_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-berev}
+      BEREV_APP_USER: ${BEREV_APP_USER:-berev_app}
+      BEREV_APP_PASSWORD: ${BEREV_APP_PASSWORD:?Set BEREV_APP_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - database
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      STARTUP_PREFLIGHT: strict
+      DATABASE_URL: postgresql+psycopg://${BEREV_APP_USER:-berev_app}:${BEREV_APP_PASSWORD:?Set BEREV_APP_PASSWORD in .env}@db:5432/${POSTGRES_DB:-berev}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
+      FORWARDED_ALLOW_IPS: ${TRAEFIK_IP:-172.30.129.2}
+      PUBLIC_APP_URL: https://erp.berev.com
+      CORS_ALLOWED_ORIGINS: https://erp.berev.com
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      EXPENSE_UPLOAD_DIR: /var/lib/berev/expense-receipts
+      GATEWAY_WEBHOOK_SECRET: ${GATEWAY_WEBHOOK_SECRET:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+    volumes:
+      - expense-receipts:/var/lib/berev/expense-receipts
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks:
+      - database
+      - edge
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - edge
+
+  proxy:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?Set ACME_EMAIL in .env}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --api.dashboard=false
+      - --accesslog=true
+      - --log.level=INFO
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/traefik/dynamic:/etc/traefik/dynamic:ro
+      - letsencrypt-data:/letsencrypt
+    depends_on:
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      edge:
+        ipv4_address: ${TRAEFIK_IP:-172.30.129.2}
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    user: "10001:10001"
+    entrypoint: ["/bin/sh", "/scripts/backup-loop.sh"]
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-berev}
+      BEREV_APP_USER: ${BEREV_APP_USER:-berev_app}
+      PGPASSWORD: ${BEREV_APP_PASSWORD:?Set BEREV_APP_PASSWORD in .env}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - ./deploy/backup:/scripts:ro
+      - ${BACKUP_PATH:-./backups}:/backups
+      - expense-receipts:/receipts:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - database
+
+  restore-db:
+    image: postgres:16-alpine
+    profiles: ["restore"]
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-berev_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: berev_restore_drill
+      BEREV_APP_USER: ${BEREV_APP_USER:-berev_app}
+      BEREV_APP_PASSWORD: ${BEREV_APP_PASSWORD:?Set BEREV_APP_PASSWORD in .env}
+    volumes:
+      - ./deploy/postgres/init-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - restore
+
+  restore-drill:
+    image: postgres:16-alpine
+    profiles: ["restore"]
+    user: "10001:10001"
+    entrypoint: ["/bin/sh", "/scripts/restore-drill.sh"]
+    environment:
+      DB_HOST: restore-db
+      DB_PORT: 5432
+      POSTGRES_DB: berev_restore_drill
+      POSTGRES_ADMIN_USER: ${POSTGRES_ADMIN_USER:-berev_owner}
+      POSTGRES_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}
+      BEREV_APP_USER: ${BEREV_APP_USER:-berev_app}
+      BEREV_APP_PASSWORD: ${BEREV_APP_PASSWORD:?Set BEREV_APP_PASSWORD in .env}
+    volumes:
+      - ./deploy/backup:/scripts:ro
+      - ${BACKUP_PATH:-./backups}:/backups:ro
+    depends_on:
+      restore-db:
+        condition: service_healthy
+    networks:
+      - restore
+
+  restore-check:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    profiles: ["restore"]
+    command: ["sh", "-c", "python -m app.cli preflight && python -m app.cli verify-integrity"]
+    environment:
+      ENVIRONMENT: production
+      STARTUP_PREFLIGHT: "off"
+      DATABASE_URL: postgresql+psycopg://${BEREV_APP_USER:-berev_app}:${BEREV_APP_PASSWORD:?Set BEREV_APP_PASSWORD in .env}@restore-db:5432/berev_restore_drill
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
+      PUBLIC_APP_URL: https://erp.berev.com
+    depends_on:
+      restore-db:
+        condition: service_healthy
+    networks:
+      - restore
+
+volumes:
+  postgres-data:
+  expense-receipts:
+  letsencrypt-data:
+
+networks:
+  database:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.128.0/24
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.129.0/24
+  restore:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.130.0/24

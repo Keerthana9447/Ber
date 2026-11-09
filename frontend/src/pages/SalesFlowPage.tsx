@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, LoadingState, useToast } from "../components/ui";
-import { api, apiBlob } from "../lib/api";
+import { api, apiAllPages, apiBlob } from "../lib/api";
 import { formatDate, formatINR } from "../lib/format";
 
 type Page<T> = { items: T[]; total: number };
@@ -69,12 +69,12 @@ export function SalesFlowPage() {
 
   const customers = useQuery({
     queryKey: ["sales-flow", "customers"],
-    queryFn: ({ signal }) => api<Page<Customer>>("/customers", { query: { page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Customer>("/customers", { signal }),
     retry: false,
   });
   const products = useQuery({
     queryKey: ["sales-flow", "products"],
-    queryFn: ({ signal }) => api<Page<Product>>("/products", { query: { page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Product>("/products", { signal }),
     retry: false,
   });
   const quotes = useQuery({

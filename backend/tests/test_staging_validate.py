@@ -25,6 +25,10 @@ def make_handler(open_customers: bool = False):
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+            self.send_header("Content-Security-Policy", "default-src 'none'")
+            self.send_header("Permissions-Policy", "camera=()")
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
             self.send_header("Content-Length", str(len(raw)))

@@ -16,13 +16,11 @@ httpcore==1.0.9
 httptools==0.9.0
 httpx==0.28.1
 idna==3.20
-iniconfig==2.3.1
 Mako==1.4.3
 MarkupSafe==3.0.4
 opentelemetry-api==1.45.2
 openpyxl==3.1.5
 packaging==26.3
-pluggy==1.7.0
 psycopg==3.3.8
 psycopg-binary==3.3.8
 pycparser==3.12
@@ -34,7 +32,6 @@ Pillow==13.0.0
 pypdf==7.0.0
 Pygments==2.21.0
 PyJWT==2.15.1
-pytest==8.4.2
 python-dotenv==1.2.4
 PyYAML==6.0.3
 SQLAlchemy==2.0.57

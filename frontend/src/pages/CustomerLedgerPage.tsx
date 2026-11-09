@@ -1,11 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button, Card, EmptyState, ErrorState, LoadingState } from "../components/ui";
-import { api } from "../lib/api";
+import { api, apiAllPages } from "../lib/api";
 import { formatDate, formatINR } from "../lib/format";
 
 type Customer = { id: number; name: string; code: string };
-type CustomerPage = { items: Customer[]; total: number };
 type LedgerItem = {
   id: number;
   date: string;
@@ -31,7 +30,7 @@ export function CustomerLedgerPage() {
   const [page, setPage] = useState(1);
   const customers = useQuery({
     queryKey: ["customers", "ledger-options"],
-    queryFn: ({ signal }) => api<CustomerPage>("/customers", { query: { page: 1, page_size: 100 }, signal }),
+    queryFn: ({ signal }) => apiAllPages<Customer>("/customers", { signal }),
     retry: false,
   });
   const ledger = useQuery({

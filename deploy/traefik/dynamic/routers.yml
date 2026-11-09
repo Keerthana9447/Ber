@@ -1,0 +1,69 @@
+http:
+  routers:
+    api-login:
+      rule: "Host(`erp.berev.com`) && Path(`/api/v1/auth/login`)"
+      entryPoints:
+        - websecure
+      service: api
+      middlewares:
+        - security-headers
+        - login-rate-limit
+      priority: 110
+      tls:
+        certResolver: letsencrypt
+
+    api:
+      rule: "Host(`erp.berev.com`) && PathPrefix(`/api`)"
+      entryPoints:
+        - websecure
+      service: api
+      middlewares:
+        - security-headers
+        - api-rate-limit
+      priority: 100
+      tls:
+        certResolver: letsencrypt
+
+    frontend:
+      rule: "Host(`erp.berev.com`)"
+      entryPoints:
+        - websecure
+      service: frontend
+      middlewares:
+        - security-headers
+      priority: 1
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: "http://api:8000"
+    frontend:
+      loadBalancer:
+        servers:
+          - url: "http://frontend:8080"
+
+  middlewares:
+    security-headers:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: strict-origin-when-cross-origin
+        permissionsPolicy: "camera=(), geolocation=(), microphone=()"
+        contentSecurityPolicy: "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+
+    api-rate-limit:
+      rateLimit:
+        average: 120
+        period: 1m
+        burst: 20
+
+    login-rate-limit:
+      rateLimit:
+        average: 10
+        period: 1m
+        burst: 3
