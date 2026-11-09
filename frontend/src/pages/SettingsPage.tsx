@@ -155,7 +155,7 @@ export function SettingsPage() {
     <div className="mx-auto max-w-4xl space-y-4">
       <div>
         <h1 className="text-2xl font-semibold text-forest-900">Company settings</h1>
-        <p className="text-sm text-slate-500">Enter official company and tax details supplied by your administrator. No company identifiers are prefilled.</p>
+        <p className="text-sm text-slate-500">Enter official company and tax details supplied by your administrator. Company identifiers are not prefilled.</p>
       </div>
       <Card className="p-6">
         {query.isLoading && <LoadingState />}

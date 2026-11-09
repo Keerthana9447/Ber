@@ -150,3 +150,10 @@ The dated Phase 5/6 entries below record implementation status before this Postg
 - Gateway processing remains disabled unless `GATEWAY_WEBHOOK_SECRET` is configured; no external payment provider was connected.
 - **Known limitation:** the customer master `opening_balance` field has no debit/credit direction; customer statements currently derive opening balances from earlier recorded transactions and do not incorporate that unsigned master field.
 - **Still required before live use:** browser walkthrough of payment, refund, credit-note, invoice-balance and statement flows; tax-professional sign-off; IRN applicability/cancellation guidance; proper weighted-average/FIFO costing; and production security, deployment, backup/restore, and load/failover validation.
+
+
+## 2026-11-09 - startup preflight, readiness endpoint, scheduler logging, staging validator (UNVERIFIED on PostgreSQL)
+- Added `app/preflight.py` (database reachability + Alembic head check), `STARTUP_PREFLIGHT` setting, `python -m app.cli preflight`, and `GET /api/v1/health/ready`.
+- Scheduler in `app/main.py` now logs error type, consecutive failures, retry delay and traceback (first failure, then every 10th), backs off exponentially (cap 900 s) and logs recovery. `JsonFormatter` now emits the structured extras.
+- Added `scripts/staging_validate.py` and tests `test_resilience.py`, `test_preflight.py`, `test_staging_validate.py`; added `docs/PRODUCTION_READINESS.md`.
+- Verification actually performed when this change was written (no PostgreSQL, SQLAlchemy or pytest in that environment): the new modules compile; `tests/test_resilience.py` (5) and `tests/test_staging_validate.py` (3, against stub servers) pass; the revision-comparison logic was exercised with a stubbed import. `tests/test_preflight.py` and the full strict suite have NOT been run.

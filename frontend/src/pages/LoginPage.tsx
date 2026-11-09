@@ -38,9 +38,13 @@ export function LoginPage() {
     <div className="flex min-h-full items-center justify-center bg-gradient-to-br from-forest-900 to-forest-950 p-4">
       <div className="w-full max-w-md rounded-2xl bg-ivory-50 p-8 shadow-2xl">
         <div className="mb-6 text-center">
-          <span className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-forest-800 text-xl font-bold text-gold-400">B</span>
-          <h1 className="text-xl font-semibold text-forest-900">BEREV ERP</h1>
-          <p className="text-sm text-slate-500">Boundless EV Revolution — sign in to continue</p>
+          <img
+            src="/branding/berev-logo.png"
+            alt="BEREV — Boundless EV Revolution"
+            className="mx-auto mb-3 h-auto w-56 rounded bg-white object-contain"
+          />
+          <h1 className="text-xl font-semibold text-forest-900"></h1>
+          <p className="text-sm text-slate-500">sign in to continue</p>
         </div>
         <form onSubmit={onSubmit} noValidate className="space-y-4">
           <Field label="Email" type="email" autoComplete="username" autoFocus {...register("email")} error={formState.errors.email?.message} />

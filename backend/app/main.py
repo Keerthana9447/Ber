@@ -16,6 +16,8 @@ from app.api.v1.router import api_router
 from app.config import Settings, get_settings
 from app.db.session import create_database_engine, create_session_factory
 from app.logging_config import configure_logging
+from app.preflight import run_preflight
+from app.resilience import retry_delay_seconds, should_log_traceback
 from app.services.notifications import process_notification_batch
 
 logger = logging.getLogger("berev.api")
@@ -29,9 +31,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         stopping = asyncio.Event()
+        mode = configured.preflight_mode
+        if mode != "off":
+            result = await asyncio.to_thread(run_preflight, engine)
+            if result.ok:
+                logger.info("startup_preflight_ok")
+            else:
+                for problem in result.problems:
+                    logger.error("startup_preflight_failed [%s]: %s", problem.code, problem.message)
+                if mode == "strict":
+                    engine.dispose()
+                    raise RuntimeError(
+                        "Startup preflight failed: " + "; ".join(p.message for p in result.problems)
+                    )
+
+        app.state.scheduler_status = {"consecutive_failures": 0, "last_error_type": None}
 
         async def run_scheduler() -> None:
+            failures = 0
             while not stopping.is_set():
+                delay = configured.notification_interval_seconds
                 try:
                     await asyncio.to_thread(
                         process_notification_batch,
@@ -39,15 +58,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         configured,
                     )
                 except Exception as error:
+                    failures += 1
+                    delay = retry_delay_seconds(configured.notification_interval_seconds, failures)
+                    app.state.scheduler_status = {
+                        "consecutive_failures": failures,
+                        "last_error_type": type(error).__name__,
+                    }
                     logger.error(
-                        "notification_scheduler_failed",
-                        extra={"error_type": type(error).__name__},
+                        "notification_scheduler_failed: %s (consecutive failures: %d, retrying in %ds)",
+                        type(error).__name__,
+                        failures,
+                        delay,
+                        exc_info=should_log_traceback(failures),
+                        extra={
+                            "error_type": type(error).__name__,
+                            "consecutive_failures": failures,
+                            "retry_in_seconds": delay,
+                        },
                     )
+                else:
+                    if failures:
+                        logger.info(
+                            "notification_scheduler_recovered",
+                            extra={"consecutive_failures": failures},
+                        )
+                    failures = 0
+                    app.state.scheduler_status = {"consecutive_failures": 0, "last_error_type": None}
                 try:
-                    await asyncio.wait_for(
-                        stopping.wait(),
-                        timeout=configured.notification_interval_seconds,
-                    )
+                    await asyncio.wait_for(stopping.wait(), timeout=delay)
                 except TimeoutError:
                     pass
 

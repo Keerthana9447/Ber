@@ -189,9 +189,25 @@ def verify_integrity() -> None:
         raise SystemExit(1)
 
 
+def preflight() -> None:
+    from app.preflight import run_preflight
+
+    engine = create_database_engine(get_settings())
+    try:
+        result = run_preflight(engine)
+    finally:
+        engine.dispose()
+    if result.ok:
+        print(f"PASS database reachable; schema at {', '.join(result.current_revisions)}")
+        return
+    for problem in result.problems:
+        print(f"FAIL [{problem.code}] {problem.message}")
+    raise SystemExit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="berev-admin")
-    parser.add_argument("command", choices=("create-admin", "verify-integrity", "set-opening-valuation"))
+    parser.add_argument("command", choices=("create-admin", "verify-integrity", "set-opening-valuation", "preflight"))
     args = parser.parse_args()
     if args.command == "create-admin":
         create_first_admin()
@@ -199,6 +215,8 @@ def main() -> None:
         verify_integrity()
     elif args.command == "set-opening-valuation":
         set_opening_valuation()
+    elif args.command == "preflight":
+        preflight()
 
 
 if __name__ == "__main__":

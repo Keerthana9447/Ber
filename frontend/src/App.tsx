@@ -20,6 +20,7 @@ import { SalesFlowPage } from "./pages/SalesFlowPage";
 import { ExpensesPage } from "./pages/ExpensesPage";
 import { DealerPortalPage } from "./pages/DealerPortalPage";
 import { PurchasingPage } from "./pages/PurchasingPage";
+import { DealersPage } from "./pages/DealersPage";
 import { ForbiddenPage, NotFoundPage } from "./pages/Misc";
 
 function RequireAuth() {
@@ -76,6 +77,8 @@ export default function App() {
                     <ExpensesPage />
                   ) : m.key === "purchases" ? (
                     <PurchasingPage />
+                  ) : m.key === "dealers" ? (
+                    <DealersPage />
                   ) : (
                     <ModuleListPage module={m} />
                   )}

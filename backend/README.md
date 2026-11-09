@@ -71,3 +71,10 @@ Verified locally on PostgreSQL 16.15 at `127.0.0.1:5432`: fresh `berev_dev` and 
 | `berev_core/numbering.py` | Financial-year invoice numbering and atomic sequence SQL |
 | `berev_core/accounting.py` | Balanced double-entry posting and financial summaries |
 | `berev_core/payments.py` | Payment allocation and invoice payment status |
+
+## Startup preflight, readiness and staging validation
+
+- On startup the app checks that the database is reachable and that its Alembic revision equals this version's migration head. `STARTUP_PREFLIGHT=off|warn|strict` controls it; the default is `strict` when `ENVIRONMENT=production` (the app refuses to start), `warn` in development (logs the problem), `off` in tests. Run the same check by hand with `python -m app.cli preflight`.
+- `GET /api/v1/health` is liveness only. `GET /api/v1/health/ready` checks the database and migrations and returns 503 with short problem codes (details go to the server log); point load balancers and monitors at it.
+- The notification scheduler now logs the exception type, failure count and retry delay (full traceback on the first failure and every 10th), backs off exponentially up to 15 minutes, and logs a recovery line. `/health/ready` reports `notification_scheduler_failing`.
+- `python scripts/staging_validate.py --base-url https://staging.example.com --db-checks` runs a black-box check of a running staging API (see its header for environment variables). See `../docs/PRODUCTION_READINESS.md` for everything it does not cover.

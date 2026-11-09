@@ -23,12 +23,12 @@ function Sidebar({ collapsed, mobileOpen, onClose }: { collapsed: boolean; mobil
         )}
       >
         <div className="flex h-16 items-center justify-between border-b border-forest-800 px-4">
-          <Link to="/" className="flex items-center gap-2" aria-label="BEREV home">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gold-500 text-sm font-bold text-forest-950">B</span>
-            <span className={cn("leading-tight", collapsed && "lg:hidden")}>
-              <span className="block text-sm font-semibold tracking-wide text-white">BEREV ERP</span>
-              <span className="block text-[10px] text-gold-300">Boundless EV Revolution</span>
-            </span>
+          <Link to="/" className="flex min-w-0 items-center" aria-label="BEREV home">
+            <img
+              src="/branding/berev-logo.png"
+              alt="BEREV — Boundless EV Revolution"
+              className={cn("h-auto w-36 max-h-12 rounded bg-white object-contain", collapsed && "lg:w-10")}
+            />
           </Link>
           <button className="lg:hidden" onClick={onClose} aria-label="Close menu">
             <X className="h-5 w-5" />

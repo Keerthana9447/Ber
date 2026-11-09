@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 
 from app.auth.security import create_token_pair, hash_password
@@ -64,6 +64,93 @@ class DealerPortalWorkflowTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.app.state.engine.dispose()
+
+    def test_admin_can_manage_dealer_profiles(self):
+        suffix = uuid.uuid4().hex[:8].upper()
+        with self.factory.begin() as session:
+            role = session.scalar(select(Role).where(Role.name == "Super Admin"))
+            self.assertIsNotNone(role)
+            customer = Customer(
+                code=f"ADMIN-DL-{suffix}",
+                name=f"Admin dealer {suffix}",
+                customer_type="dealer",
+            )
+            user = User(
+                email=f"dealer-admin-{suffix.lower()}@example.test",
+                full_name="Dealer administration test",
+                password_hash=hash_password(uuid.uuid4().hex),
+                role_id=role.id,
+                must_change_password=False,
+            )
+            session.add_all([customer, user])
+            session.flush()
+            customer_id, user_id = customer.id, user.id
+
+        headers = {
+            "Authorization": f"Bearer {create_token_pair(self.settings, user_id).access_token}"
+        }
+
+        async def exercise_api():
+            async with AsyncClient(
+                transport=ASGITransport(app=self.app),
+                base_url="http://testserver",
+            ) as client:
+                eligible = await client.get("/api/v1/dealers/eligible-customers", headers=headers)
+                self.assertEqual(eligible.status_code, 200, eligible.text)
+                self.assertIn(customer_id, {item["id"] for item in eligible.json()})
+
+                created = await client.post(
+                    "/api/v1/dealers",
+                    headers=headers,
+                    json={
+                        "dealer_code": f"ADMIN-DL-{suffix}",
+                        "customer_id": customer_id,
+                        "territory": "North",
+                        "status": "active",
+                    },
+                )
+                self.assertEqual(created.status_code, 201, created.text)
+                dealer_id = created.json()["id"]
+                self.assertEqual(created.json()["name"], f"Admin dealer {suffix}")
+
+                listed = await client.get(
+                    "/api/v1/dealers",
+                    params={"q": suffix, "status": "active"},
+                    headers=headers,
+                )
+                self.assertEqual(listed.status_code, 200, listed.text)
+                self.assertEqual(listed.json()["total"], 1)
+                self.assertEqual(listed.json()["items"][0]["id"], dealer_id)
+
+                updated = await client.put(
+                    f"/api/v1/dealers/{dealer_id}",
+                    headers=headers,
+                    json={
+                        "dealer_code": f"ADMIN-DL-{suffix}",
+                        "territory": "South",
+                        "status": "suspended",
+                    },
+                )
+                self.assertEqual(updated.status_code, 200, updated.text)
+                self.assertEqual(updated.json()["territory"], "South")
+                self.assertEqual(updated.json()["status"], "suspended")
+
+                duplicate = await client.post(
+                    "/api/v1/dealers",
+                    headers=headers,
+                    json={
+                        "dealer_code": f"ADMIN-DL-2-{suffix}",
+                        "customer_id": customer_id,
+                        "status": "pending",
+                    },
+                )
+                self.assertEqual(duplicate.status_code, 409, duplicate.text)
+
+        try:
+            asyncio.run(exercise_api())
+        finally:
+            with self.factory.begin() as session:
+                session.execute(update(User).where(User.id == user_id).values(is_active=False))
 
     def test_server_pricing_status_and_dealer_isolation(self):
         suffix = uuid.uuid4().hex[:8].upper()

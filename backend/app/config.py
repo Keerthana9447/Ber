@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     login_lockout_minutes: int = Field(default=15, ge=1, le=1440)
     password_reset_minutes: int = Field(default=30, ge=5, le=1440)
     notification_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    # off | warn | strict. Default: strict in production, warn in development, off in tests.
+    startup_preflight: Literal["off", "warn", "strict"] | None = None
     smtp_host: str | None = None
     smtp_port: int = Field(default=587, ge=1, le=65535)
     smtp_username: str | None = None
@@ -33,6 +35,12 @@ class Settings(BaseSettings):
     public_app_url: str = "http://localhost:5173"
     log_level: str = "INFO"
     expense_upload_dir: Path = PROJECT_ROOT / "data" / "expense-receipts"
+
+    @property
+    def preflight_mode(self) -> str:
+        if self.startup_preflight is not None:
+            return self.startup_preflight
+        return {"production": "strict", "development": "warn"}.get(self.environment, "off")
 
     @property
     def smtp_configured(self) -> bool:

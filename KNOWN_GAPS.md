@@ -67,3 +67,8 @@ These results apply only to the isolated local PostgreSQL 16.15 service and `ber
 - Operational backup/restore, production load/failover, deployment, and first-admin operational procedures remain unverified.
 - GST assumptions are documented in `backend/README.md`; this is not a legal-compliance claim and requires review by a qualified Indian tax professional.
 - BEREV's official GSTIN, PAN, bank information, and other registrations must be supplied through configuration rather than invented.
+
+## Added 2026-11-09 (UNVERIFIED until the strict PostgreSQL suite is re-run)
+- Startup preflight, `/api/v1/health/ready`, scheduler failure logging/backoff and `scripts/staging_validate.py` are new. Their database-dependent tests (`tests/test_preflight.py`) have not run on PostgreSQL. Run the strict suite before relying on them.
+- The liveness endpoint intentionally does not check the database (use `/health/ready`).
+- Still absent from the repository: Dockerfile/compose/reverse-proxy configuration, CORS and security headers, request rate limiting, backups and a restore drill, CI. See `docs/PRODUCTION_READINESS.md`.
