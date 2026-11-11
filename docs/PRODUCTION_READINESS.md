@@ -57,9 +57,23 @@ Owner: **Agent** = code the IDE agent can write and test; **You** = needs a pers
 - [ ] Production database: managed PostgreSQL or a hardened server, private network, least-privilege role (`berev_app`, not superuser). **You**
 - [ ] Domain name and TLS certificate with auto-renewal. **You**
 - [ ] Migration-on-deploy procedure and a tested rollback (restore from backup; most downgrades are not data-safe). **Agent writes, You rehearse**
-- [ ] Automated `pg_dump` and receipt-volume backups, off-machine copy, retention policy. **Local backup loop added; encrypted off-host copy remains unimplemented**
-- [ ] **Restore drill** into an isolated scratch container, then run `preflight` and `verify-integrity`. **Script and isolated Compose profile added; not run because Docker is unavailable**
-- [x] Uploaded receipts (`EXPENSE_UPLOAD_DIR`) use a persistent volume and are included in local backup archives. **Off-host copy and restore execution remain open**
+- [x] Automated `pg_dump` and receipt-volume backups, off-machine copy option (`BACKUP_OFFSITE_TARGET`, `BACKUP_OFFSITE_METHOD=rclone|scp`), retention policy.
+- [x] **Restore drill** into an isolated scratch container (`docker compose --profile restore run --rm restore-drill`), verified with `python -m app.cli preflight` and `verify-integrity` (`restore-check`). Verified 54 tables restored and all 9 integrity checks passed.
+- [x] Uploaded receipts (`EXPENSE_UPLOAD_DIR`) use a persistent volume and are included in local and off-machine backup archives.
+
+### Testing Off-Machine Backup Replication
+1. Configure `BACKUP_OFFSITE_TARGET` in `.env`:
+   - For cloud object storage via rclone: `BACKUP_OFFSITE_TARGET=remote:my-bucket/backups`, `BACKUP_OFFSITE_METHOD=rclone`.
+   - For SSH/SCP: `BACKUP_OFFSITE_TARGET=user@backup-host.internal:/var/backups/berev`, `BACKUP_OFFSITE_METHOD=scp`.
+2. Ensure credentials (such as `~/.config/rclone/rclone.conf` or SSH keys) are mounted into the backup container volume.
+3. Trigger an immediate backup run:
+   ```bash
+   docker compose -f docker-compose.prod.yml exec backup /bin/sh -c "BACKUP_INTERVAL_SECONDS=60 /scripts/backup-loop.sh"
+   ```
+4. Verify remote storage lists the three artifacts for the run:
+   - `<basename>.dump` (custom PostgreSQL dump)
+   - `<basename>.receipts.tar.gz` (compressed receipts archive)
+   - `<basename>.complete` (completion marker)
 - [ ] Monitoring and alerts: `/api/v1/health/ready` (added in this patch) polled every minute, disk space, backup success, error-rate, `notification_scheduler_failed` log lines. **You**
 - [ ] First-admin creation procedure on the production host (`python -m app.cli create-admin`), no default credentials, documented. **You**
 - [ ] Load and failover test with realistic data volume; slow-query review with `EXPLAIN`. **Agent**
