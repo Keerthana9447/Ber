@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 
+from decimal import Decimal
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from berev_core.accounting import DEFAULT_ACCOUNTS
 from berev_core.gst import STATE_CODES
-from app.models import ExpenseCategory, LedgerAccount, Permission, PaymentMethod, Role, State, Unit
+from app.models import ExpenseCategory, GstRate, HsnSacCode, LedgerAccount, Permission, PaymentMethod, Role, State, Unit
 
 logger = logging.getLogger("berev.seed")
 
@@ -45,6 +47,22 @@ EXPENSE_CATEGORIES = (
     ("Office Supplies", "5160"),
     ("Fuel", "5170"),
     ("Other Expenses", "5190"),
+)
+
+GST_RATES = (
+    (Decimal("0.00"), "Nil rated (0%)"),
+    (Decimal("5.00"), "GST 5%"),
+    (Decimal("12.00"), "GST 12%"),
+    (Decimal("18.00"), "GST 18%"),
+    (Decimal("28.00"), "GST 28%"),
+)
+
+HSN_SAC_CODES = (
+    ("8501", "HSN", "Electric motors and generators", Decimal("18.00")),
+    ("8507", "HSN", "Electric accumulators / batteries", Decimal("18.00")),
+    ("8711", "HSN", "Motorcycles and electric two-wheelers", Decimal("5.00")),
+    ("8708", "HSN", "Parts and accessories of motor vehicles", Decimal("18.00")),
+    ("9987", "SAC", "Maintenance and repair services", Decimal("18.00")),
 )
 
 PERMISSION_DESCRIPTIONS = {
@@ -151,6 +169,25 @@ def seed_reference_data(session: Session) -> None:
 
     for code, name in UNITS:
         _get_or_add(session, Unit, code, {"code": code, "name": name})
+
+    for rate, description in GST_RATES:
+        existing_rate = session.scalar(select(GstRate).where(GstRate.rate == rate))
+        if existing_rate is None:
+            session.add(GstRate(rate=rate, description=description, is_active=True))
+
+    for code, kind, description, default_rate in HSN_SAC_CODES:
+        existing_hsn = session.scalar(select(HsnSacCode).where(HsnSacCode.code == code))
+        if existing_hsn is None:
+            session.add(
+                HsnSacCode(
+                    code=code,
+                    kind=kind,
+                    description=description,
+                    default_gst_rate=default_rate,
+                    default_cess_rate=Decimal("0.00"),
+                    is_active=True,
+                )
+            )
 
     for code, name, ledger_kind in PAYMENT_METHODS:
         method = session.scalar(select(PaymentMethod).where(PaymentMethod.code == code))

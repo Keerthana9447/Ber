@@ -33,7 +33,7 @@ class SettingsWrite(BaseModel):
     bank_ifsc: str | None = Field(default=None, max_length=32)
     upi_id: str | None = Field(default=None, max_length=255)
     logo_path: str | None = Field(default=None, max_length=1000)
-    invoice_prefix: str = Field(min_length=1, max_length=16)
+    invoice_prefix: str = Field(min_length=1, max_length=3)
     fy_start_month: int = Field(ge=1, le=12)
     allow_invoice_issue_without_approval: bool = False
     terms_and_conditions: str | None = Field(default=None, max_length=5000)
