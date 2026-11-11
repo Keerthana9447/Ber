@@ -1,0 +1,25 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+backups/
+build/
+dist/
+*.egg-info/
+.idea/
+.vscode/
+Thumbs.db
+# real company profile (contains tax identifiers)
+backend/company_profile.json

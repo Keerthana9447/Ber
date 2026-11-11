@@ -1,0 +1,1 @@
+"""BEREV ERP backend application."""

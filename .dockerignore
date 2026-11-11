@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+**/.venv
+**/venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/dist
+**/build
+backups
+**/expense-receipts
+backend/company_profile.json

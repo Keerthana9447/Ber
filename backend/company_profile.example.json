@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to company_profile.json and fill in. Never commit the real file.",
+  "legal_name": "REPLACE WITH LEGAL NAME",
+  "trade_name": null,
+  "address": null,
+  "phone": null,
+  "email": null,
+  "gstin": null,
+  "pan": null,
+  "state_code": null,
+  "bank_name": null,
+  "bank_account_no": null,
+  "bank_ifsc": null,
+  "upi_id": null,
+  "logo_path": null,
+  "invoice_prefix": "INV",
+  "fy_start_month": 4,
+  "allow_invoice_issue_without_approval": false,
+  "terms_and_conditions": null,
+  "authorized_signatory": null
+}
