@@ -23,3 +23,6 @@ dist/
 Thumbs.db
 # real company profile (contains tax identifiers)
 backend/company_profile.json
+docker-compose.local.yml
+docker-compose.override.yml
+deploy/traefik/dynamic-local/

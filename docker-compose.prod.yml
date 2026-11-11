@@ -30,7 +30,7 @@ services:
       STARTUP_PREFLIGHT: strict
       DATABASE_URL: postgresql+psycopg://${BEREV_APP_USER:-berev_app}:${BEREV_APP_PASSWORD:?Set BEREV_APP_PASSWORD in .env}@db:5432/${POSTGRES_DB:-berev}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
-      FORWARDED_ALLOW_IPS: ${TRAEFIK_IP:-172.30.129.2}
+      FORWARDED_ALLOW_IPS: ${TRAEFIK_IP:-172.30.129.254}
       PUBLIC_APP_URL: https://erp.berev.world
       CORS_ALLOWED_ORIGINS: https://erp.berev.world
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -103,7 +103,7 @@ services:
         condition: service_healthy
     networks:
       edge:
-        ipv4_address: ${TRAEFIK_IP:-172.30.129.2}
+        ipv4_address: ${TRAEFIK_IP:-172.30.129.254}
 
   backup:
     image: postgres:16-alpine

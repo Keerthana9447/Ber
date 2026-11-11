@@ -128,7 +128,7 @@ def run_checks(base_url: str, email: str | None, password: str | None, productio
                 r.add("PASS", "refresh rotates the refresh token")
                 status, _, _ = http("POST", f"{api}/auth/refresh", {"refresh_token": refresh1})
                 r.add("PASS" if status == 401 else "FAIL", "replayed (old) refresh token rejected", f"HTTP {status}")
-                status, _, _ = http("POST", f"{api}/auth/logout", {"refresh_token": rotated["refresh_token"]})
+                status, _, _ = http("POST", f"{api}/auth/logout", {"refresh_token": rotated["refresh_token"]}, headers=auth)
                 r.add("PASS" if status in (200, 204) else "FAIL", "logout", f"HTTP {status}")
                 status, _, _ = http("POST", f"{api}/auth/refresh", {"refresh_token": rotated["refresh_token"]})
                 r.add("PASS" if status == 401 else "FAIL", "refresh token revoked after logout", f"HTTP {status}")
