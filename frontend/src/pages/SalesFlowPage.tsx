@@ -67,11 +67,25 @@ export function SalesFlowPage() {
   const [reportFrom, setReportFrom] = useState(today.slice(0, 8) + "01");
   const [reportTo, setReportTo] = useState(today);
 
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerPage, setCustomerPage] = useState(1);
+
   const customers = useQuery({
-    queryKey: ["sales-flow", "customers"],
-    queryFn: ({ signal }) => apiAllPages<Customer>("/customers", { signal }),
+    queryKey: ["sales-flow", "customers", customerSearch, customerPage],
+    queryFn: ({ signal }) => api<Page<Customer>>("/customers", {
+      query: { q: customerSearch, is_active: true, page: customerPage, page_size: 20 },
+      signal,
+    }),
     retry: false,
   });
+  const listedCustomer = customers.data?.items.find((item) => String(item.id) === customerId);
+  const selectedCustomerQuery = useQuery({
+    queryKey: ["customer", customerId],
+    queryFn: ({ signal }) => api<Customer>(`/customers/${customerId}`, { signal }),
+    enabled: !!customerId && !listedCustomer,
+    retry: false,
+  });
+  const selectedCustomer = listedCustomer ?? selectedCustomerQuery.data;
   const products = useQuery({
     queryKey: ["sales-flow", "products"],
     queryFn: ({ signal }) => apiAllPages<Product>("/products", { signal }),
@@ -107,7 +121,6 @@ export function SalesFlowPage() {
   const rowsQuery = pathname === "/quotations" ? quotes : pathname === "/orders" ? orders : pathname === "/delivery-challans" ? challans : report;
 
   const productById = useMemo(() => new Map((products.data?.items ?? []).map((product) => [product.id, product])), [products.data]);
-  const selectedCustomer = customers.data?.items.find((customer) => String(customer.id) === customerId);
 
   async function refresh() {
     await Promise.all([
@@ -248,17 +261,45 @@ export function SalesFlowPage() {
         <Card className="space-y-4 p-5">
           <h2 className="text-lg font-semibold">{editingQuote ? "Edit draft quotation" : "Create quotation"}</h2>
           <div className="grid gap-3 md:grid-cols-3">
-            <label className="text-sm font-medium">Customer
-              <select className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2" value={customerId}
-                onChange={(event) => {
-                  const id = event.target.value;
-                  setCustomerId(id);
-                  setPlace(customers.data?.items.find((customer) => String(customer.id) === id)?.state_code ?? "");
-                }}>
-                <option value="">Select customer</option>
-                {(customers.data?.items ?? []).map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
-              </select>
-            </label>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Customer</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Search customer…"
+                  value={customerSearch}
+                  onChange={(e) => { setCustomerSearch(e.target.value); setCustomerPage(1); }}
+                  className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                />
+                <select
+                  className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                  value={customerId}
+                  onChange={(event) => {
+                    const id = event.target.value;
+                    setCustomerId(id);
+                    const cust = customers.data?.items.find((c) => String(c.id) === id) ?? (selectedCustomer?.id === Number(id) ? selectedCustomer : undefined);
+                    setPlace(cust?.state_code ?? "");
+                  }}
+                >
+                  <option value="">Select customer</option>
+                  {selectedCustomer && !listedCustomer && (
+                    <option value={selectedCustomer.id}>{selectedCustomer.name}</option>
+                  )}
+                  {(customers.data?.items ?? []).map((customer) => (
+                    <option key={customer.id} value={customer.id}>{customer.name}</option>
+                  ))}
+                </select>
+              </div>
+              {customers.data && customers.data.total > 20 && (
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>Page {customerPage} of {Math.ceil(customers.data.total / 20)} ({customers.data.total} total)</span>
+                  <div className="flex gap-1">
+                    <button type="button" disabled={customerPage <= 1} onClick={() => setCustomerPage((p) => p - 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Prev</button>
+                    <button type="button" disabled={customerPage >= Math.ceil(customers.data.total / 20)} onClick={() => setCustomerPage((p) => p + 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Next</button>
+                  </div>
+                </div>
+              )}
+            </div>
             <Field label="Place of supply" value={place} onChange={(event) => setPlace(event.target.value.toUpperCase())} maxLength={2} />
             <Field label="Quotation date" type="date" value={quoteDate} onChange={(event) => setQuoteDate(event.target.value)} />
             <Field label="Valid until" type="date" value={validUntil} onChange={(event) => setValidUntil(event.target.value)} />

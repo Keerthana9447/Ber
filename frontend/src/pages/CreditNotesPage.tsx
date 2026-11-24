@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, LoadingState, useToast } from "../components/ui";
-import { api, apiAllPages, apiBlob } from "../lib/api";
+import { api, apiBlob } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDate, formatINR } from "../lib/format";
 
@@ -45,11 +45,18 @@ export function CreditNotesPage() {
   const [confirmIssue, setConfirmIssue] = useState(false);
   const [creditNotePage, setCreditNotePage] = useState(1);
 
+  const [invoiceSearch, setInvoiceSearch] = useState("");
+  const [invoicePage, setInvoicePage] = useState(1);
+
   const invoices = useQuery({
-    queryKey: ["invoices", "issued-options"],
-    queryFn: ({ signal }) => apiAllPages<Invoice>("/invoices", { query: { status: "issued" }, signal }),
+    queryKey: ["invoices", "issued-options", invoiceSearch, invoicePage],
+    queryFn: ({ signal }) => api<Page<Invoice>>("/invoices", {
+      query: { status: "issued", q: invoiceSearch, page: invoicePage, page_size: 20 },
+      signal,
+    }),
     retry: false,
   });
+  const listedInvoice = invoices.data?.items.find((item) => String(item.id) === invoiceId);
   const selectedInvoice = useQuery({
     queryKey: ["invoices", "credit-note-source", invoiceId],
     queryFn: ({ signal }) => api<Invoice>(`/invoices/${invoiceId}`, { signal }),
@@ -118,12 +125,41 @@ export function CreditNotesPage() {
           {invoices.isError && <ErrorState message={invoices.error.message} onRetry={() => void invoices.refetch()} />}
           {invoices.data && (
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="text-sm font-medium text-slate-700 sm:col-span-2">Issued invoice
-                <select disabled={create.isPending} value={invoiceId} onChange={(event) => { setInvoiceId(event.target.value); setQuantities({}); }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
-                  <option value="">Select invoice</option>
-                  {invoices.data.items.map((invoice) => <option key={invoice.id} value={invoice.id}>{invoice.invoice_number ?? `Invoice ${invoice.id}`} · {invoice.customer_name} · {formatINR(invoice.grand_total)}</option>)}
-                </select>
-              </label>
+              <div className="space-y-1 sm:col-span-2">
+                <label className="text-sm font-medium text-slate-700">Issued invoice</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Search invoice or customer…"
+                    value={invoiceSearch}
+                    onChange={(e) => { setInvoiceSearch(e.target.value); setInvoicePage(1); }}
+                    className="w-1/2 rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm"
+                  />
+                  <select
+                    disabled={create.isPending}
+                    value={invoiceId}
+                    onChange={(event) => { setInvoiceId(event.target.value); setQuantities({}); }}
+                    className="w-1/2 rounded-lg border border-ivory-300 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="">Select invoice</option>
+                    {selectedInvoice.data && !listedInvoice && (
+                      <option value={selectedInvoice.data.id}>{selectedInvoice.data.invoice_number ?? `Invoice ${selectedInvoice.data.id}`} · {selectedInvoice.data.customer_name} · {formatINR(selectedInvoice.data.grand_total)}</option>
+                    )}
+                    {(invoices.data?.items ?? []).map((invoice) => (
+                      <option key={invoice.id} value={invoice.id}>{invoice.invoice_number ?? `Invoice ${invoice.id}`} · {invoice.customer_name} · {formatINR(invoice.grand_total)}</option>
+                    ))}
+                  </select>
+                </div>
+                {invoices.data && invoices.data.total > 20 && (
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>Page {invoicePage} of {Math.ceil(invoices.data.total / 20)} ({invoices.data.total} total)</span>
+                    <div className="flex gap-1">
+                      <button type="button" disabled={invoicePage <= 1} onClick={() => setInvoicePage((p) => p - 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Prev</button>
+                      <button type="button" disabled={invoicePage >= Math.ceil(invoices.data.total / 20)} onClick={() => setInvoicePage((p) => p + 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Next</button>
+                    </div>
+                  </div>
+                )}
+              </div>
               {selectedInvoice.isLoading && <LoadingState label="Loading invoice lines…" />}
               {selectedInvoice.isError && <ErrorState message={selectedInvoice.error.message} onRetry={() => void selectedInvoice.refetch()} />}
               {selectedInvoice.data && (

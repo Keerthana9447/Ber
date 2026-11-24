@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button, Card, EmptyState, ErrorState, LoadingState } from "../components/ui";
-import { api, apiAllPages } from "../lib/api";
+import { api } from "../lib/api";
 import { formatDate, formatINR } from "../lib/format";
 
+type Page<T> = { items: T[]; total: number };
 type Customer = { id: number; name: string; code: string };
 type LedgerItem = {
   id: number;
@@ -28,11 +29,25 @@ export function CustomerLedgerPage() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [page, setPage] = useState(1);
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerPage, setCustomerPage] = useState(1);
+
   const customers = useQuery({
-    queryKey: ["customers", "ledger-options"],
-    queryFn: ({ signal }) => apiAllPages<Customer>("/customers", { signal }),
+    queryKey: ["customers", "ledger-options", customerSearch, customerPage],
+    queryFn: ({ signal }) => api<Page<Customer>>("/customers", {
+      query: { q: customerSearch, is_active: true, page: customerPage, page_size: 20 },
+      signal,
+    }),
     retry: false,
   });
+  const listedCustomer = customers.data?.items.find((item: Customer) => String(item.id) === customerId);
+  const selectedCustomerQuery = useQuery({
+    queryKey: ["customer", customerId],
+    queryFn: ({ signal }) => api<Customer>(`/customers/${customerId}`, { signal }),
+    enabled: !!customerId && !listedCustomer,
+    retry: false,
+  });
+  const selectedCustomer = listedCustomer ?? selectedCustomerQuery.data;
   const ledger = useQuery({
     queryKey: ["customer-ledger", customerId, from, to, page],
     queryFn: ({ signal }) => api<Ledger>(`/customers/${customerId}/ledger`, { query: { from: from || undefined, to: to || undefined, page, page_size: 50 }, signal }),
@@ -51,12 +66,40 @@ export function CustomerLedgerPage() {
         {customers.isError && <ErrorState message={customers.error.message} onRetry={() => void customers.refetch()} />}
         {customers.data && (
           <>
-            <label className="text-sm font-medium text-slate-700">Customer
-              <select value={customerId} onChange={(event) => { setCustomerId(event.target.value); setPage(1); }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
-                <option value="">Select customer</option>
-                {customers.data.items.map((customer) => <option key={customer.id} value={customer.id}>{customer.code} · {customer.name}</option>)}
-              </select>
-            </label>
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-slate-700">Customer</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Search customer…"
+                  value={customerSearch}
+                  onChange={(e) => { setCustomerSearch(e.target.value); setCustomerPage(1); }}
+                  className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                />
+                <select
+                  value={customerId}
+                  onChange={(event) => { setCustomerId(event.target.value); setPage(1); }}
+                  className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                >
+                  <option value="">Select customer</option>
+                  {selectedCustomer && !listedCustomer && (
+                    <option value={selectedCustomer.id}>{selectedCustomer.code} · {selectedCustomer.name}</option>
+                  )}
+                  {customers.data.items.map((customer: Customer) => (
+                    <option key={customer.id} value={customer.id}>{customer.code} · {customer.name}</option>
+                  ))}
+                </select>
+              </div>
+              {customers.data && customers.data.total > 20 && (
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>Page {customerPage} of {Math.ceil(customers.data.total / 20)} ({customers.data.total} total)</span>
+                  <div className="flex gap-1">
+                    <button type="button" disabled={customerPage <= 1} onClick={() => setCustomerPage((p) => p - 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Prev</button>
+                    <button type="button" disabled={customerPage >= Math.ceil(customers.data.total / 20)} onClick={() => setCustomerPage((p) => p + 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Next</button>
+                  </div>
+                </div>
+              )}
+            </div>
             <label className="text-sm font-medium text-slate-700">From
               <input type="date" value={from} onChange={(event) => { setFrom(event.target.value); setPage(1); }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2" />
             </label>

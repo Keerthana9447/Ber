@@ -670,15 +670,28 @@ def list_invoices(
     page_size: int = Query(default=20, ge=1, le=100),
     q: str = Query(default="", max_length=200),
     invoice_status: Literal["draft", "approved", "issued", "cancelled"] | None = Query(default=None, alias="status"),
+    customer_id: int | None = Query(default=None, gt=0),
 ) -> dict[str, object]:
     filters = [dealer_customer_scope(user, Invoice.customer_id)]
     if invoice_status is not None:
         filters.append(Invoice.status == invoice_status)
+    if customer_id is not None:
+        filters.append(Invoice.customer_id == customer_id)
     search = q.strip()
     if search:
         pattern = f"%{search}%"
-        filters.append(Invoice.invoice_number.ilike(pattern))
-    total = session.scalar(select(func.count(Invoice.id)).where(*filters)) or 0
+        filters.append(
+            or_(
+                Invoice.invoice_number.ilike(pattern),
+                Customer.name.ilike(pattern),
+                Customer.code.ilike(pattern),
+            )
+        )
+    total = session.scalar(
+        select(func.count(Invoice.id))
+        .join(Customer, Customer.id == Invoice.customer_id)
+        .where(*filters)
+    ) or 0
     rows = session.execute(
         select(Invoice, Customer.name)
         .join(Customer, Customer.id == Invoice.customer_id)
@@ -703,6 +716,8 @@ def list_invoices(
             for invoice, customer_name in rows
         ],
         "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 

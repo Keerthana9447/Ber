@@ -47,11 +47,28 @@ export function PaymentsPage() {
   const [refundConfirmOpen, setRefundConfirmOpen] = useState(false);
   const [paymentPage, setPaymentPage] = useState(1);
 
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerPage, setCustomerPage] = useState(1);
+  const [invoiceSearch, setInvoiceSearch] = useState("");
+  const [invoicePage, setInvoicePage] = useState(1);
+
   const customers = useQuery({
-    queryKey: ["customers", "payment-options"],
-    queryFn: ({ signal }) => apiAllPages<Customer>("/customers", { signal }),
+    queryKey: ["customers", "payment-options", customerSearch, customerPage],
+    queryFn: ({ signal }) => api<Page<Customer>>("/customers", {
+      query: { q: customerSearch, is_active: true, page: customerPage, page_size: 20 },
+      signal,
+    }),
     retry: false,
   });
+  const listedCustomer = customers.data?.items.find((item) => String(item.id) === customerId);
+  const selectedCustomerQuery = useQuery({
+    queryKey: ["customer", customerId],
+    queryFn: ({ signal }) => api<Customer>(`/customers/${customerId}`, { signal }),
+    enabled: !!customerId && !listedCustomer,
+    retry: false,
+  });
+  const selectedCustomer = listedCustomer ?? selectedCustomerQuery.data;
+
   const methods = useQuery({
     queryKey: ["payment-methods"],
     queryFn: ({ signal }) => api<PaymentMethod[]>("/payment-methods", { signal }),
@@ -75,10 +92,28 @@ export function PaymentsPage() {
     retry: false,
   });
   const invoices = useQuery({
-    queryKey: ["invoices", "payment-options"],
-    queryFn: ({ signal }) => apiAllPages<InvoiceOption>("/invoices", { query: { status: "issued" }, signal }),
+    queryKey: ["invoices", "payment-options", customerId, invoiceSearch, invoicePage],
+    queryFn: ({ signal }) => api<Page<InvoiceOption>>("/invoices", {
+      query: {
+        status: "issued",
+        customer_id: customerId ? Number(customerId) : undefined,
+        q: invoiceSearch,
+        page: invoicePage,
+        page_size: 20,
+      },
+      signal,
+    }),
+    enabled: mode !== "supplier",
     retry: false,
   });
+  const listedInvoice = invoices.data?.items.find((item) => String(item.id) === invoiceId);
+  const selectedInvoiceQuery = useQuery({
+    queryKey: ["invoice", invoiceId],
+    queryFn: ({ signal }) => api<InvoiceOption>(`/invoices/${invoiceId}`, { signal }),
+    enabled: !!invoiceId && !listedInvoice,
+    retry: false,
+  });
+  const selectedInvoice = listedInvoice ?? selectedInvoiceQuery.data;
 
   const record = useMutation({
     mutationFn: () => mode === "supplier"
@@ -201,12 +236,44 @@ export function PaymentsPage() {
                 {(suppliers.data?.items ?? []).map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}
               </select>
             </label>
-            ) : <label className="text-sm font-medium text-slate-700">Customer
-              <select required disabled={record.isPending} value={customerId} onChange={(event) => { setCustomerId(event.target.value); setInvoiceId(""); }} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
-                <option value="">Select customer</option>
-                {(customers.data?.items ?? []).map((customer) => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
-              </select>
-            </label>}
+            ) : (
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-slate-700">Customer</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Search customer…"
+                    value={customerSearch}
+                    onChange={(e) => { setCustomerSearch(e.target.value); setCustomerPage(1); }}
+                    className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                  />
+                  <select
+                    required
+                    disabled={record.isPending}
+                    value={customerId}
+                    onChange={(event) => { setCustomerId(event.target.value); setInvoiceId(""); setInvoicePage(1); }}
+                    className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                  >
+                    <option value="">Select customer</option>
+                    {selectedCustomer && !listedCustomer && (
+                      <option value={selectedCustomer.id}>{selectedCustomer.name}</option>
+                    )}
+                    {(customers.data?.items ?? []).map((customer) => (
+                      <option key={customer.id} value={customer.id}>{customer.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {customers.data && customers.data.total > 20 && (
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>Page {customerPage} of {Math.ceil(customers.data.total / 20)} ({customers.data.total} total)</span>
+                    <div className="flex gap-1">
+                      <button type="button" disabled={customerPage <= 1} onClick={() => setCustomerPage((p) => p - 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Prev</button>
+                      <button type="button" disabled={customerPage >= Math.ceil(customers.data.total / 20)} onClick={() => setCustomerPage((p) => p + 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Next</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <label className="text-sm font-medium text-slate-700">Payment method
               <select required disabled={record.isPending} value={methodId} onChange={(event) => setMethodId(event.target.value)} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
                 <option value="">Select method</option>
@@ -231,14 +298,41 @@ export function PaymentsPage() {
               </label>
             ) : mode === "receipt" ? (
               <>
-                <label className="text-sm font-medium text-slate-700">Allocate to invoice (optional; blank allocates oldest-first)
-                  <select disabled={record.isPending} value={invoiceId} onChange={(event) => setInvoiceId(event.target.value)} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
-                    <option value="">Oldest-first / advance</option>
-                    {(invoices.data?.items ?? []).filter((invoice) => invoice.customer_id === Number(customerId)).map((invoice) => (
-                      <option key={invoice.id} value={invoice.id}>{invoice.invoice_number ?? `Invoice ${invoice.id}`} · {formatINR(invoice.grand_total)}</option>
-                    ))}
-                  </select>
-                </label>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-slate-700">Allocate to invoice (optional)</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Search invoice…"
+                      value={invoiceSearch}
+                      onChange={(e) => { setInvoiceSearch(e.target.value); setInvoicePage(1); }}
+                      className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                    />
+                    <select
+                      disabled={record.isPending}
+                      value={invoiceId}
+                      onChange={(event) => setInvoiceId(event.target.value)}
+                      className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                    >
+                      <option value="">Oldest-first / advance</option>
+                      {selectedInvoice && !listedInvoice && (
+                        <option value={selectedInvoice.id}>{selectedInvoice.invoice_number ?? `Invoice ${selectedInvoice.id}`} · {formatINR(selectedInvoice.grand_total)}</option>
+                      )}
+                      {(invoices.data?.items ?? []).map((invoice) => (
+                        <option key={invoice.id} value={invoice.id}>{invoice.invoice_number ?? `Invoice ${invoice.id}`} · {formatINR(invoice.grand_total)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {invoices.data && invoices.data.total > 20 && (
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>Page {invoicePage} of {Math.ceil(invoices.data.total / 20)} ({invoices.data.total} total)</span>
+                      <div className="flex gap-1">
+                        <button type="button" disabled={invoicePage <= 1} onClick={() => setInvoicePage((p) => p - 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Prev</button>
+                        <button type="button" disabled={invoicePage >= Math.ceil(invoices.data.total / 20)} onClick={() => setInvoicePage((p) => p + 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Next</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 {invoiceId && <Field label="Amount to allocate" disabled={record.isPending} type="number" min="0.01" step="0.01" value={allocationAmount} onChange={(event) => setAllocationAmount(event.target.value)} placeholder={amount} />}
               </>
             ) : (
@@ -249,14 +343,42 @@ export function PaymentsPage() {
                   </select>
                 </label>
                 {refundSource === "invoice_credit" && (
-                  <label className="text-sm font-medium text-slate-700">Issued invoice credit
-                    <select required disabled={record.isPending} value={invoiceId} onChange={(event) => setInvoiceId(event.target.value)} className="mt-1 w-full rounded-lg border border-ivory-300 bg-white px-3 py-2">
-                      <option value="">Select invoice</option>
-                      {(invoices.data?.items ?? []).filter((invoice) => invoice.customer_id === Number(customerId)).map((invoice) => (
-                        <option key={invoice.id} value={invoice.id}>{invoice.invoice_number ?? `Invoice ${invoice.id}`} · {formatINR(invoice.grand_total)}</option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Issued invoice credit</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Search invoice…"
+                        value={invoiceSearch}
+                        onChange={(e) => { setInvoiceSearch(e.target.value); setInvoicePage(1); }}
+                        className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                      />
+                      <select
+                        required
+                        disabled={record.isPending}
+                        value={invoiceId}
+                        onChange={(event) => setInvoiceId(event.target.value)}
+                        className="w-1/2 rounded-lg border border-ivory-300 bg-white px-2 py-1 text-sm"
+                      >
+                        <option value="">Select invoice</option>
+                        {selectedInvoice && !listedInvoice && (
+                          <option value={selectedInvoice.id}>{selectedInvoice.invoice_number ?? `Invoice ${selectedInvoice.id}`} · {formatINR(selectedInvoice.grand_total)}</option>
+                        )}
+                        {(invoices.data?.items ?? []).map((invoice) => (
+                          <option key={invoice.id} value={invoice.id}>{invoice.invoice_number ?? `Invoice ${invoice.id}`} · {formatINR(invoice.grand_total)}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {invoices.data && invoices.data.total > 20 && (
+                      <div className="flex items-center justify-between text-xs text-slate-500">
+                        <span>Page {invoicePage} of {Math.ceil(invoices.data.total / 20)} ({invoices.data.total} total)</span>
+                        <div className="flex gap-1">
+                          <button type="button" disabled={invoicePage <= 1} onClick={() => setInvoicePage((p) => p - 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Prev</button>
+                          <button type="button" disabled={invoicePage >= Math.ceil(invoices.data.total / 20)} onClick={() => setInvoicePage((p) => p + 1)} className="px-1.5 py-0.5 rounded border border-ivory-300 disabled:opacity-50">Next</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
               </>
             )}
