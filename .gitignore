@@ -26,3 +26,12 @@ backend/company_profile.json
 docker-compose.local.yml
 docker-compose.override.yml
 deploy/traefik/dynamic-local/
+# scratch / one-off scripts
+smoke_test.py
+genhash.py
+create_admin.py
+create_admin.sql
+update_admin.sql
+check_login.py
+list_paths.py
+pwhash.txt

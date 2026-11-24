@@ -15,11 +15,11 @@ test.describe("BEREV Master Prompt Section 21 - 15 E2E Scenarios against Compose
   let invoiceTotal: string;
 
   test.beforeAll(async ({ request }) => {
-    // Authenticate Super Admin
+    // Authenticate Super Admin — credentials from env vars (see .env.example)
     const loginRes = await request.post("/api/v1/auth/login", {
       data: {
-        email: "staging-test@berev.local",
-        password: "StagingPassword123!",
+        email: process.env.E2E_ADMIN_EMAIL ?? "staging-test@berev.local",
+        password: process.env.E2E_ADMIN_PASSWORD ?? "StagingPassword123!",
       },
     });
     expect(loginRes.ok()).toBeTruthy();
@@ -29,8 +29,8 @@ test.describe("BEREV Master Prompt Section 21 - 15 E2E Scenarios against Compose
     // Authenticate Restricted User
     const restrictedRes = await request.post("/api/v1/auth/login", {
       data: {
-        email: "restricted@berev.local",
-        password: "RestrictedPassword123!",
+        email: process.env.E2E_RESTRICTED_EMAIL ?? "restricted@berev.local",
+        password: process.env.E2E_RESTRICTED_PASSWORD ?? "RestrictedPassword123!",
       },
     });
     expect(restrictedRes.ok()).toBeTruthy();
