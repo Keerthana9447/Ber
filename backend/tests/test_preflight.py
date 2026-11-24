@@ -37,7 +37,29 @@ class EvaluateRevisionTests(unittest.TestCase):
         self.assertEqual([p.code for p in evaluate_revisions(["0011"], ["0010"])], [SCHEMA_MISMATCH])
 
 
+def _reset_loggers_for_assertlogs():
+    """
+    When alembic runs logging.config.fileConfig() in-process (from test_migrations.py),
+    it sets ``disabled=True`` on every existing logger not listed in alembic.ini.
+    That silences the ``berev.*`` loggers so that ``assertLogs`` never sees any records,
+    even though the loggers emit at ERROR level.  Reset the three loggers we care about
+    here so that subsequent assertLogs() calls work regardless of test ordering.
+    """
+    root = logging.getLogger()
+    if not root.handlers:
+        root.addHandler(logging.StreamHandler())
+    root.setLevel(logging.DEBUG)
+    for name in ("berev", "berev.preflight", "berev.api"):
+        lg = logging.getLogger(name)
+        lg.disabled = False   # ← this is the key reset that fileConfig clobbers
+        lg.propagate = True
+        lg.setLevel(logging.NOTSET)
+
+
 class RunPreflightTests(unittest.TestCase):
+    def setUp(self):
+        _reset_loggers_for_assertlogs()
+
     def test_ok_when_database_is_at_head(self):
         result = run_preflight(sqlite_engine("0010"), heads=["0010"])
         self.assertTrue(result.ok)
@@ -62,6 +84,9 @@ class RunPreflightTests(unittest.TestCase):
 
 
 class ReadinessAndStartupTests(unittest.TestCase):
+    def setUp(self):
+        _reset_loggers_for_assertlogs()
+
     def test_ready_endpoint_returns_503_with_codes_only_when_database_is_down(self):
         app = create_app(make_settings(database_url=UNREACHABLE))
 

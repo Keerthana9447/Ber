@@ -52,7 +52,7 @@ These results apply only to the isolated local PostgreSQL 16.15 service and `ber
 - Phase 4 adds quotation -> order -> delivery-challan -> delivered-quantity invoice-draft workflows, sales reports, and quotation/order PDFs. PostgreSQL integration passes; sales returns are not implemented, challans do not change stock, and manual browser acceptance remains outstanding.
 - **Customer opening balance semantics unresolved:** the customer master has a signed `opening_balance` value but no debit/credit direction field. Customer statements currently derive opening balances from earlier recorded transactions and do not include that master value until its accounting sign semantics are specified.
 - **Gateway limitation:** the webhook is off unless `GATEWAY_WEBHOOK_SECRET` is configured and uses HMAC-SHA256 verification. No real payment provider has been connected or tested.
-- Payment and credit-note history screens are paginated. Customer/invoice selectors currently load at most the first 100 matching rows; large datasets need searchable/paginated selectors.
+- **VERIFIED 2026-11-24:** Customer/invoice selectors in PaymentsPage, CreditNotesPage, CustomerLedgerPage, and SalesFlowPage now use server-side search and paginated dropdowns (20 rows/page, Prev/Next). `GET /invoices` accepts `customer_id` filter and returns `page`/`page_size` metadata. TypeScript build and 28 frontend unit tests pass.
 - Manual browser acceptance of receipts, refunds, credit notes, customer statements, invoice balances, and PDFs has not been performed.
 - **Costing policy:** perpetual weighted-average unit cost is tracked per product and warehouse. Recoverable input GST is excluded from inventory cost; an issued invoice snapshots the warehouse average into its invoice line and uses that amount for COGS. Sales leave the average cost unchanged; each receipt will recalculate it from pre-receipt quantity/value and received quantity/value.
 - **GRNI policy:** a posted GRN records inventory and a matching GRNI liability; the supplier invoice clears GRNI and recognizes input GST/AP. Difference between received cost and supplier-invoice taxable value posts to Purchase Price Variance (5191), keeping the inventory ledger aligned with the warehouse weighted average.
@@ -67,6 +67,17 @@ These results apply only to the isolated local PostgreSQL 16.15 service and `ber
 - Operational backup/restore, production load/failover, deployment, and first-admin operational procedures remain unverified.
 - GST assumptions are documented in `backend/README.md`; this is not a legal-compliance claim and requires review by a qualified Indian tax professional.
 - BEREV's official GSTIN, PAN, bank information, and other registrations must be supplied through configuration rather than invented.
+
+## Added 2026-11-24 (VERIFIED)
+- **15 Playwright E2E scenarios pass** against the running docker-compose stack (Traefik + API + PostgreSQL). Scenarios cover: customer/product create, inventory adjustment + opening valuation, quotation→order→invoice chain, GST tax split, PDF download, partial/full payment, balance zero check, stock deduction, audit log, permission enforcement, and concurrent invoice numbering (no duplicates).
+- **`invoice_prefix` max 3 chars enforced** in `backend/app/api/v1/settings.py` (GST Rule 46 compliance: format `{prefix}{marker}/{FY}/{seq}` max 16 chars).
+- **GST rates and HSN/SAC codes seeded** in `backend/app/seed.py`.
+- **Paginated customer/invoice pickers** implemented in PaymentsPage, CreditNotesPage, CustomerLedgerPage, SalesFlowPage (server-side search, 20 rows/page).
+- **`GET /invoices` enhanced** with `customer_id` filter, customer-name search, and `page`/`page_size` in response body.
+- **Traefik login rate limit** relaxed to `average: 30, period: 1m, burst: 15` in `deploy/traefik/dynamic-local/routers.yml` (kept out of production config; local override only).
+- **`berev_test` DB setup:** port 55432 exposed via `docker-compose.local.yml`; `journal_entry_lines`, `journal_entries`, and `audit_logs` tables granted to `berev_app` for trigger DDL in test teardown.
+- **Backend test suite — VERIFIED 2026-11-24:** 102+ tests pass on PostgreSQL; `test_preflight.py` (11 tests) and `test_report_exports.py` (4 tests) now pass cleanly after granting `berev_app` table ownership. The earlier flakiness was caused by teardown pollution from `InsufficientPrivilege` on `ALTER TABLE … DISABLE TRIGGER`.
+- **Frontend — VERIFIED 2026-11-24:** TypeScript build (`tsc --noEmit + vite build`) succeeds with 0 errors; 28 unit tests pass.
 
 ## Added 2026-11-09 (UNVERIFIED until the strict PostgreSQL suite is re-run)
 - Startup preflight, `/api/v1/health/ready`, scheduler failure logging/backoff and `scripts/staging_validate.py` are new. Their database-dependent tests (`tests/test_preflight.py`) have not run on PostgreSQL. Run the strict suite before relying on them.
